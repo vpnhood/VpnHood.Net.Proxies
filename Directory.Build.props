@@ -19,8 +19,8 @@
 		<Copyright>© OmegaHood LLC. All rights reserved.</Copyright>
 		<NeutralLanguage>en</NeutralLanguage>
 		<PackageLicenseExpression>LGPL-2.1-only</PackageLicenseExpression>
-		<PackageProjectUrl>https://github.com/vpnhood/VpnHood.Core.Proxies</PackageProjectUrl>
-		<RepositoryUrl>https://github.com/vpnhood/VpnHood.Core.Proxies</RepositoryUrl>
+		<PackageProjectUrl>https://github.com/vpnhood/VpnHood.Net.Proxies</PackageProjectUrl>
+		<RepositoryUrl>https://github.com/vpnhood/VpnHood.Net.Proxies</RepositoryUrl>
 		<RepositoryType>git</RepositoryType>
 		<PublishRepositoryUrl>true</PublishRepositoryUrl>
 		<EmbedUntrackedSources>true</EmbedUntrackedSources>

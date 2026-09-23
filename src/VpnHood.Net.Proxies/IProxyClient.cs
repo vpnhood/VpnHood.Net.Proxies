@@ -1,0 +1,12 @@
+using System.Net;
+using System.Net.Sockets;
+
+namespace VpnHood.Net.Proxies;
+
+public interface IProxyClient
+{
+    IPEndPoint ProxyEndPoint { get; }
+    Task ConnectAsync(TcpClient tcpClient, string host, int port, CancellationToken cancellationToken);
+    Task ConnectAsync(TcpClient tcpClient, IPEndPoint destination, CancellationToken cancellationToken);
+    Task CheckConnectionAsync(TcpClient tcpClient, CancellationToken cancellationToken);
+}

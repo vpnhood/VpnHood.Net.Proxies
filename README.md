@@ -1,4 +1,4 @@
-# VpnHood.Core.Proxies
+# VpnHood.Net.Proxies
 
 **Standard proxy clients and servers for .NET** — SOCKS5, SOCKS4/4a, HTTP, and HTTPS, in one small cross-platform library with no native dependencies, built on `async`/`await` and `Span<byte>`.
 
@@ -17,7 +17,7 @@ Common properties:
 
 * Standalone and reusable — plain .NET, no VPN or VpnHood runtime required; the only dependency is `Microsoft.Extensions.Logging.Abstractions`
 * Fully asynchronous, cancellation-aware I/O; no blocking calls
-* Handshake and connect timeouts with sensible defaults ([options classes](https://github.com/vpnhood/VpnHood.Core.Proxies/blob/main/src/VpnHood.Core.Proxies/Socks5ProxyServers/Socks5ProxyServerOptions.cs))
+* Handshake and connect timeouts with sensible defaults ([options classes](https://github.com/vpnhood/VpnHood.Net.Proxies/blob/main/src/VpnHood.Net.Proxies/Socks5ProxyServers/Socks5ProxyServerOptions.cs))
 * Built for memory-constrained hosts (mobile network extensions, small containers): every per-connection resource is bounded — an optional `MaxConnections` cap (unlimited by default), capped header sizes, bounded UDP destination tables, and a TCP half-close linger timeout so idle peers cannot retain tunnels indefinitely
 * Correct TCP half-close: a peer that shuts down its send side still receives the full response through the tunnel
 * Low-allocation hot paths (`ArrayPool`, pooled tunnel buffers, spans)
@@ -28,7 +28,7 @@ Common properties:
 ## Installation
 
 ```bash
-dotnet add package VpnHood.Core.Proxies
+dotnet add package VpnHood.Net.Proxies
 ```
 
 Or add the project to your solution and reference it directly.
@@ -39,7 +39,7 @@ Or add the project to your solution and reference it directly.
 
 ```csharp
 using System.Net;
-using VpnHood.Core.Proxies.Socks5ProxyServers;
+using VpnHood.Net.Proxies.Socks5ProxyServers;
 
 using var server = new Socks5ProxyServer(new Socks5ProxyServerOptions {
     ListenEndPoint = new IPEndPoint(IPAddress.Loopback, 1080),
@@ -61,7 +61,7 @@ await server.RunAsync(cts.Token);
 ```csharp
 using System.Net;
 using System.Net.Sockets;
-using VpnHood.Core.Proxies.Socks5ProxyClients;
+using VpnHood.Net.Proxies.Socks5ProxyClients;
 
 var client = new Socks5ProxyClient(new Socks5ProxyClientOptions {
     ProxyEndPoint = new IPEndPoint(IPAddress.Loopback, 1080),
@@ -85,7 +85,7 @@ A single `Socks5ProxyClient` instance is reusable across many connections; the h
 ```csharp
 using System.Net;
 using System.Net.Sockets;
-using VpnHood.Core.Proxies.Socks5ProxyClients;
+using VpnHood.Net.Proxies.Socks5ProxyClients;
 
 var client = new Socks5ProxyClient(new Socks5ProxyClientOptions {
     ProxyEndPoint = new IPEndPoint(IPAddress.Loopback, 1080)
@@ -115,7 +115,7 @@ var from = Socks5ProxyClient.ParseUdpResponse(result.Buffer, out var responsePay
 
 ```csharp
 using System.Net;
-using VpnHood.Core.Proxies.HttpProxyServers;
+using VpnHood.Net.Proxies.HttpProxyServers;
 
 using var server = new HttpProxyServer(new HttpProxyServerOptions {
     ListenEndPoint = new IPEndPoint(IPAddress.Loopback, 8080),
@@ -131,7 +131,7 @@ Handles `CONNECT` tunnels (HTTPS traffic, IPv6 authorities like `[::1]:443` incl
 
 ```csharp
 using System.Net;
-using VpnHood.Core.Proxies.HttpProxyServers;
+using VpnHood.Net.Proxies.HttpProxyServers;
 
 using var server = new HttpsProxyServer(new HttpProxyServerOptions {
     ListenEndPoint = new IPEndPoint(IPAddress.Loopback, 8443),
@@ -145,7 +145,7 @@ server.Start();
 ```csharp
 using System.Net;
 using System.Net.Sockets;
-using VpnHood.Core.Proxies.HttpProxyClients;
+using VpnHood.Net.Proxies.HttpProxyClients;
 
 var client = new HttpProxyClient(new HttpProxyClientOptions {
     ProxyEndPoint = new IPEndPoint(IPAddress.Loopback, 8443),
@@ -171,7 +171,7 @@ The client accepts any `2xx` CONNECT response and maps proxy errors (407, 429, 5
 ```csharp
 using System.Net;
 using System.Net.Sockets;
-using VpnHood.Core.Proxies.Socks4ProxyClients;
+using VpnHood.Net.Proxies.Socks4ProxyClients;
 
 var client = new Socks4ProxyClient(new Socks4ProxyClientOptions {
     ProxyEndPoint = new IPEndPoint(IPAddress.Loopback, 1080),
@@ -186,15 +186,15 @@ await client.ConnectAsync(tcp, "example.com", 80, CancellationToken.None); // ho
 
 The repo ships two small CLI utilities, handy for manual testing:
 
-* **VpnHood.Core.Proxies.ServerApp** (`VhProxyServer`) — run an HTTP, HTTPS, or SOCKS5 proxy server, with optional auth and self-signed certificate generation.
-* **VpnHood.Core.Proxies.ClientApp** (`VhProxyClient`) — connect through any supported proxy and exchange test data.
+* **VpnHood.Net.Proxies.ServerApp** (`VhProxyServer`) — run an HTTP, HTTPS, or SOCKS5 proxy server, with optional auth and self-signed certificate generation.
+* **VpnHood.Net.Proxies.ClientApp** (`VhProxyClient`) — connect through any supported proxy and exchange test data.
 
 ```bash
-dotnet run --project samples/VpnHood.Core.Proxies.ServerApp -- socks5 --port 1080 --username user --password pass
-dotnet run --project samples/VpnHood.Core.Proxies.ClientApp -- socks5 --proxy-port 1080 --username user --password pass
+dotnet run --project samples/VpnHood.Net.Proxies.ServerApp -- socks5 --port 1080 --username user --password pass
+dotnet run --project samples/VpnHood.Net.Proxies.ClientApp -- socks5 --proxy-port 1080 --username user --password pass
 ```
 
-See [USAGE.md](https://github.com/vpnhood/VpnHood.Core.Proxies/blob/main/USAGE.md) for all commands and options.
+See [USAGE.md](https://github.com/vpnhood/VpnHood.Net.Proxies/blob/main/USAGE.md) for all commands and options.
 
 ## Error handling
 
@@ -202,7 +202,7 @@ Proxy-level failures throw `ProxyClientException`, which derives from `SocketExc
 
 ## Testing
 
-Integration tests live in `tests/VpnHood.Core.Proxies.Tests` and run the real clients against the real servers over loopback — including UDP relays, TLS proxies, IPv6 CONNECT, pipelined requests, and injection attempts against the UDP relay:
+Integration tests live in `tests/VpnHood.Net.Proxies.Tests` and run the real clients against the real servers over loopback — including UDP relays, TLS proxies, IPv6 CONNECT, pipelined requests, and injection attempts against the UDP relay:
 
 ```bash
 dotnet test
@@ -210,4 +210,4 @@ dotnet test
 
 ## License
 
-[LGPL-2.1](https://github.com/vpnhood/VpnHood.Core.Proxies/blob/main/LICENSE) © OmegaHood LLC — an independent library maintained by the [VpnHood](https://github.com/vpnhood/vpnhood) team.
+[LGPL-2.1](https://github.com/vpnhood/VpnHood.Net.Proxies/blob/main/LICENSE) © OmegaHood LLC — an independent library maintained by the [VpnHood](https://github.com/vpnhood/vpnhood) team.
