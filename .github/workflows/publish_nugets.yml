@@ -52,7 +52,7 @@ jobs:
           sparse-checkout: pub
 
       - uses: actions/setup-dotnet@v6
-        with: { dotnet-version: "10.0.x" }
+        with: { global-json-file: module/global.json }
 
       - name: Configure git identity
         run: |
