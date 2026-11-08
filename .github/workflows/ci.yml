@@ -15,3 +15,16 @@ jobs:
           global-json-file: global.json
       - run: dotnet build -c Release
       - run: dotnet test -c Release --no-build
+
+      # The README's and the doc comments' examples must match the test regions they are copied from
+      # (tests/VpnHood.Net.Proxies.Tests/ReadmeExampleTests.cs). The script is VpnHood's, shared by its modules.
+      - name: Check out vpnhood/VpnHood's pub scripts
+        uses: actions/checkout@v7
+        with:
+          repository: vpnhood/VpnHood
+          ref: develop
+          path: .vh
+          sparse-checkout: pub
+      - name: Check that every example matches its test
+        shell: pwsh
+        run: ./.vh/pub/lib/Update-Snippets.ps1 -Root . -Check

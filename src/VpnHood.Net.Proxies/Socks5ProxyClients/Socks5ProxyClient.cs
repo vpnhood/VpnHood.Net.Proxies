@@ -7,6 +7,32 @@ using VpnHood.Net.Proxies.Socks5Proxy;
 
 namespace VpnHood.Net.Proxies.Socks5ProxyClients;
 
+/// <summary>
+/// Opens TCP tunnels and UDP associations through a SOCKS5 proxy (RFC 1928), with optional username and
+/// password authentication (RFC 1929).
+/// </summary>
+/// <remarks>
+/// One instance can serve many connections at once; run one operation at a time on each connection, as the
+/// method negotiation and the authentication run once for each <see cref="TcpClient"/>. Keep the options
+/// unchanged while the client is in use. A host name is sent to the proxy as a domain name, so the proxy
+/// resolves it and no DNS query for it leaves this machine.
+/// </remarks>
+/// <example>
+/// <code snippet="Snippet:Socks5Connect" language="csharp">
+/// var client = new Socks5ProxyClient(new Socks5ProxyClientOptions {
+///     ProxyEndPoint = proxyEndPoint
+/// });
+///
+/// using var tcp = new TcpClient();
+///
+/// // A host name goes to the proxy as a SOCKS5 domain name, so the proxy resolves it: no local DNS query.
+/// await client.ConnectAsync(tcp, destinationHost, destinationPort, CancellationToken.None);
+///
+/// var stream = tcp.GetStream(); // the tunnel: speak HTTP, TLS or anything else
+/// </code>
+/// </example>
+/// <param name="options">The proxy's address and the credentials to offer.</param>
+/// <param name="logger">The logger for the client's progress and failures, or <see langword="null"/> for none.</param>
 public class Socks5ProxyClient(
     Socks5ProxyClientOptions options,
     ILogger<Socks5ProxyClient>? logger = null)
@@ -16,8 +42,45 @@ public class Socks5ProxyClient(
     // so track it per TcpClient. Entries disappear with their TcpClient.
     private readonly ConditionalWeakTable<TcpClient, object> _authenticatedConnections = new();
 
+    /// <inheritdoc/>
     public IPEndPoint ProxyEndPoint => options.ProxyEndPoint;
 
+    /// <summary>
+    /// Opens a tunnel through the proxy to a host, given by name or IP address.
+    /// </summary>
+    /// <param name="tcpClient">
+    /// The connection to use. When it is not connected, it is connected to <see cref="ProxyEndPoint"/> and
+    /// authenticated first. When the task completes, its <see cref="TcpClient.GetStream"/> carries the tunnel;
+    /// when the exchange with the proxy fails, it is closed.
+    /// </param>
+    /// <param name="host">
+    /// The destination's host name or IP address literal. A name is sent for the proxy to resolve.
+    /// </param>
+    /// <param name="port">The destination's port, from 1 to 65535.</param>
+    /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous operation. It completes when the tunnel is open.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> or <paramref name="host"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="host"/> is empty or white space, or its UTF-8 form exceeds 255 bytes; or a credential in
+    /// the options exceeds 255 bytes.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="port"/> is zero or negative, or above 65535 when <paramref name="host"/> is an IP address
+    /// literal.
+    /// </exception>
+    /// <exception cref="ProxyClientException">
+    /// The proxy refused the request; <see cref="SocketException.SocketErrorCode"/> tells why.
+    /// </exception>
+    /// <exception cref="UnauthorizedAccessException">
+    /// The proxy requires credentials the options lack, refused them, or accepts none of the offered methods.
+    /// </exception>
+    /// <exception cref="ProtocolViolationException">The proxy's answer is not SOCKS5.</exception>
+    /// <exception cref="NotSupportedException">
+    /// The proxy chose an authentication method this client lacks, or answered with an unknown address type.
+    /// </exception>
+    /// <exception cref="SocketException">The connection to the proxy failed.</exception>
+    /// <exception cref="EndOfStreamException">The proxy closed the connection before its answer was complete.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was canceled.</exception>
     public async Task ConnectAsync(TcpClient tcpClient, string host, int port, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(tcpClient);
@@ -49,6 +112,28 @@ public class Socks5ProxyClient(
         }
     }
 
+    /// <summary>
+    /// Connects to the proxy and runs the method negotiation and the authentication, without asking for a
+    /// tunnel.
+    /// </summary>
+    /// <param name="tcpClient">
+    /// The connection to check. When it is not connected, it is connected to <see cref="ProxyEndPoint"/> first.
+    /// After the check it stays open and authenticated, so a later <see cref="ConnectAsync(TcpClient, string, int, CancellationToken)"/>
+    /// or <see cref="CreateUdpAssociateAsync(TcpClient, CancellationToken)"/> on it skips the negotiation. When
+    /// the check fails, it is closed.
+    /// </param>
+    /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous operation. It completes when the check passes.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">A credential in the options exceeds 255 bytes.</exception>
+    /// <exception cref="UnauthorizedAccessException">
+    /// The proxy requires credentials the options lack, refused them, or accepts none of the offered methods.
+    /// </exception>
+    /// <exception cref="ProtocolViolationException">The proxy's answer is not SOCKS5.</exception>
+    /// <exception cref="NotSupportedException">The proxy chose an authentication method this client lacks.</exception>
+    /// <exception cref="SocketException">The connection to the proxy failed.</exception>
+    /// <exception cref="EndOfStreamException">The proxy closed the connection before its answer was complete.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was canceled.</exception>
     public async Task CheckConnectionAsync(TcpClient tcpClient, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(tcpClient);
@@ -62,6 +147,33 @@ public class Socks5ProxyClient(
         }
     }
 
+    /// <summary>
+    /// Opens a tunnel through the proxy to an IP endpoint.
+    /// </summary>
+    /// <param name="tcpClient">
+    /// The connection to use. When it is not connected, it is connected to <see cref="ProxyEndPoint"/> and
+    /// authenticated first. When the task completes, its <see cref="TcpClient.GetStream"/> carries the tunnel;
+    /// when the exchange with the proxy fails, it is closed.
+    /// </param>
+    /// <param name="destination">The destination's IPv4 or IPv6 address and port.</param>
+    /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous operation. It completes when the tunnel is open.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> or <paramref name="destination"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">A credential in the options exceeds 255 bytes.</exception>
+    /// <exception cref="ProxyClientException">
+    /// The proxy refused the request; <see cref="SocketException.SocketErrorCode"/> tells why.
+    /// </exception>
+    /// <exception cref="UnauthorizedAccessException">
+    /// The proxy requires credentials the options lack, refused them, or accepts none of the offered methods.
+    /// </exception>
+    /// <exception cref="ProtocolViolationException">The proxy's answer is not SOCKS5.</exception>
+    /// <exception cref="NotSupportedException">
+    /// The destination is neither IPv4 nor IPv6, or the proxy chose an authentication method this client
+    /// lacks, or answered with an unknown address type.
+    /// </exception>
+    /// <exception cref="SocketException">The connection to the proxy failed.</exception>
+    /// <exception cref="EndOfStreamException">The proxy closed the connection before its answer was complete.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was canceled.</exception>
     public async Task ConnectAsync(TcpClient tcpClient, IPEndPoint destination, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(tcpClient);
@@ -85,9 +197,104 @@ public class Socks5ProxyClient(
         }
     }
 
+    /// <summary>
+    /// Asks the proxy to relay UDP datagrams for this client, without saying which local endpoint will send
+    /// them.
+    /// </summary>
+    /// <remarks>
+    /// The proxy learns the client's UDP endpoint from the datagrams it receives; the server of this library
+    /// takes the first datagram from the address of <paramref name="tcpClient"/>'s connection.
+    /// </remarks>
+    /// <param name="tcpClient">
+    /// The control connection. When it is not connected, it is connected to <see cref="ProxyEndPoint"/> and
+    /// authenticated first. The association lasts as long as it stays open: keep it open, and send nothing
+    /// more on it, while datagrams flow; close it to end the association. The server of this library also
+    /// ends it when anything arrives on it. When the exchange with the proxy fails, it is closed.
+    /// </param>
+    /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
+    /// <returns>
+    /// A task that represents the asynchronous operation. Its result is the proxy's relay endpoint: send each
+    /// datagram there, wrapped by <see cref="WriteUdpRequest"/>.
+    /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">A credential in the options exceeds 255 bytes.</exception>
+    /// <exception cref="ProxyClientException">
+    /// The proxy refused the request; <see cref="SocketException.SocketErrorCode"/> tells why.
+    /// </exception>
+    /// <exception cref="UnauthorizedAccessException">
+    /// The proxy requires credentials the options lack, refused them, or accepts none of the offered methods.
+    /// </exception>
+    /// <exception cref="ProtocolViolationException">The proxy's answer is not SOCKS5.</exception>
+    /// <exception cref="NotSupportedException">
+    /// The proxy chose an authentication method this client lacks, or gave its relay endpoint as a domain name
+    /// or with an unknown address type.
+    /// </exception>
+    /// <exception cref="SocketException">The connection to the proxy failed.</exception>
+    /// <exception cref="EndOfStreamException">The proxy closed the connection before its answer was complete.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was canceled.</exception>
     public async Task<IPEndPoint> CreateUdpAssociateAsync(TcpClient tcpClient, CancellationToken cancellationToken) =>
         await CreateUdpAssociateAsync(tcpClient, null, cancellationToken).ConfigureAwait(false);
 
+    /// <summary>
+    /// Asks the proxy to relay UDP datagrams sent from a local endpoint.
+    /// </summary>
+    /// <example>
+    /// <code snippet="Snippet:Socks5Udp" language="csharp">
+    /// var client = new Socks5ProxyClient(new Socks5ProxyClientOptions {
+    ///     ProxyEndPoint = proxyEndPoint
+    /// });
+    ///
+    /// // the local UDP socket that exchanges datagrams with the proxy
+    /// using var udp = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+    /// var localUdpEndPoint = (IPEndPoint)udp.Client.LocalEndPoint!;
+    ///
+    /// // the association lasts while this TCP control connection stays open, with nothing more sent on it
+    /// using var controlTcp = new TcpClient();
+    /// var relayEndPoint = await client.CreateUdpAssociateAsync(controlTcp, localUdpEndPoint, CancellationToken.None);
+    ///
+    /// // wrap the payload in the SOCKS5 UDP header (10 bytes for IPv4, 22 for IPv6) and send it to the relay
+    /// var buffer = new byte[22 + payload.Length];
+    /// var length = Socks5ProxyClient.WriteUdpRequest(buffer, destination, payload);
+    /// await udp.SendAsync(buffer.AsMemory(0, length), relayEndPoint);
+    ///
+    /// // receive the answer and unwrap it
+    /// var result = await udp.ReceiveAsync();
+    /// var from = Socks5ProxyClient.ParseUdpResponse(result.Buffer, out var answer);
+    /// </code>
+    /// </example>
+    /// <param name="tcpClient">
+    /// The control connection. When it is not connected, it is connected to <see cref="ProxyEndPoint"/> and
+    /// authenticated first. The association lasts as long as it stays open: keep it open, and send nothing
+    /// more on it, while datagrams flow; close it to end the association. The server of this library also
+    /// ends it when anything arrives on it. When the exchange with the proxy fails, it is closed.
+    /// </param>
+    /// <param name="clientUdpEndPoint">
+    /// The address and port the client will send datagrams from, as the proxy sees them, or
+    /// <see langword="null"/> when unknown, for example behind NAT. A proxy may relay only datagrams from it,
+    /// as the server of this library does.
+    /// </param>
+    /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
+    /// <returns>
+    /// A task that represents the asynchronous operation. Its result is the proxy's relay endpoint: send each
+    /// datagram there, wrapped by <see cref="WriteUdpRequest"/>. When the proxy answers with an unspecified
+    /// address, the result has the address of <see cref="ProxyEndPoint"/>, as RFC 1928 asks.
+    /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">A credential in the options exceeds 255 bytes.</exception>
+    /// <exception cref="ProxyClientException">
+    /// The proxy refused the request; <see cref="SocketException.SocketErrorCode"/> tells why.
+    /// </exception>
+    /// <exception cref="UnauthorizedAccessException">
+    /// The proxy requires credentials the options lack, refused them, or accepts none of the offered methods.
+    /// </exception>
+    /// <exception cref="ProtocolViolationException">The proxy's answer is not SOCKS5.</exception>
+    /// <exception cref="NotSupportedException">
+    /// <paramref name="clientUdpEndPoint"/> is neither IPv4 nor IPv6, the proxy chose an authentication method
+    /// this client lacks, or it gave its relay endpoint as a domain name or with an unknown address type.
+    /// </exception>
+    /// <exception cref="SocketException">The connection to the proxy failed.</exception>
+    /// <exception cref="EndOfStreamException">The proxy closed the connection before its answer was complete.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was canceled.</exception>
     public async Task<IPEndPoint> CreateUdpAssociateAsync(TcpClient tcpClient, IPEndPoint? clientUdpEndPoint, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(tcpClient);
@@ -339,6 +546,20 @@ public class Socks5ProxyClient(
             _ => new ProxyClientException(SocketError.ProtocolNotSupported, $"Unknown SOCKS5 error: {reply}")
         };
 
+    /// <summary>
+    /// Wraps a datagram in the SOCKS5 UDP request header (RFC 1928, section 7), ready to send to the relay
+    /// endpoint of a UDP association.
+    /// </summary>
+    /// <param name="destinationBuffer">
+    /// The buffer to write to. It needs 10 bytes more than <paramref name="data"/> for an IPv4 destination and
+    /// 22 bytes more for an IPv6 one.
+    /// </param>
+    /// <param name="destination">The datagram's destination.</param>
+    /// <param name="data">The datagram's payload.</param>
+    /// <returns>The number of bytes written to <paramref name="destinationBuffer"/>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="destination"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="destinationBuffer"/> is too small.</exception>
+    /// <exception cref="NotSupportedException"><paramref name="destination"/> is neither IPv4 nor IPv6.</exception>
     public static int WriteUdpRequest(Span<byte> destinationBuffer, IPEndPoint destination, ReadOnlySpan<byte> data)
     {
         ArgumentNullException.ThrowIfNull(destination);
@@ -370,6 +591,20 @@ public class Socks5ProxyClient(
         return offset;
     }
 
+    /// <summary>
+    /// Reads the SOCKS5 UDP header of a datagram received from the relay endpoint of a UDP association.
+    /// </summary>
+    /// <param name="datagram">The datagram as received from the relay.</param>
+    /// <param name="payload">
+    /// When this method returns, the datagram's payload: a slice of <paramref name="datagram"/>, not a copy.
+    /// </param>
+    /// <returns>The address and port the payload came from.</returns>
+    /// <exception cref="ArgumentException"><paramref name="datagram"/> is shorter than 7 bytes.</exception>
+    /// <exception cref="NotSupportedException">
+    /// The datagram is a fragment, its reserved bytes are not zero, or its address type is unknown.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">The datagram ends inside its address.</exception>
+    /// <exception cref="IndexOutOfRangeException">The datagram ends inside its port.</exception>
     public static Socks5Endpoint ParseUdpResponse(ReadOnlySpan<byte> datagram, out ReadOnlySpan<byte> payload)
     {
         if (datagram.Length < 7)

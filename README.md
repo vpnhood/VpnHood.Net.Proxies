@@ -35,132 +35,103 @@ Or add the project to your solution and reference it directly.
 
 ## Quick start
 
+Each example below runs as a test in CI ([ReadmeExampleTests.cs](https://github.com/vpnhood/VpnHood.Net.Proxies/blob/main/tests/VpnHood.Net.Proxies.Tests/ReadmeExampleTests.cs)). Their namespaces are `VpnHood.Net.Proxies.Socks5ProxyServers`, `.Socks5ProxyClients`, `.HttpProxyServers`, `.HttpProxyClients` and `.Socks4ProxyClients`.
+
 ### Run a SOCKS5 proxy server
 
-```csharp
-using System.Net;
-using VpnHood.Net.Proxies.Socks5ProxyServers;
-
+```csharp Snippet:Socks5Server
 using var server = new Socks5ProxyServer(new Socks5ProxyServerOptions {
-    ListenEndPoint = new IPEndPoint(IPAddress.Loopback, 1080),
-    Username = null, // set both to require RFC 1929 authentication
+    ListenEndPoint = new IPEndPoint(IPAddress.Loopback, 0), // 0: the system picks a free port
+    Username = null, // set a user name to require RFC 1929 authentication
     Password = null
 });
 
-// Either run until cancelled...
-var cts = new CancellationTokenSource();
-Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
-await server.RunAsync(cts.Token);
-
-// ...or control the lifetime yourself:
-// server.Start();  /* later */  server.Stop();
+server.Start(); // or: await server.RunAsync(cancellationToken);
+var proxyEndPoint = server.ListenerEndPoint;
 ```
 
 ### Connect through a SOCKS5 proxy (TCP)
 
-```csharp
-using System.Net;
-using System.Net.Sockets;
-using VpnHood.Net.Proxies.Socks5ProxyClients;
-
+```csharp Snippet:Socks5Connect
 var client = new Socks5ProxyClient(new Socks5ProxyClientOptions {
-    ProxyEndPoint = new IPEndPoint(IPAddress.Loopback, 1080),
-    Username = null,
-    Password = null
+    ProxyEndPoint = proxyEndPoint
 });
 
 using var tcp = new TcpClient();
 
-// Host names are sent to the proxy as SOCKS5 domain addresses,
-// so DNS is resolved remotely — no local DNS leak.
-await client.ConnectAsync(tcp, "example.com", 80, CancellationToken.None);
+// A host name goes to the proxy as a SOCKS5 domain name, so the proxy resolves it: no local DNS query.
+await client.ConnectAsync(tcp, destinationHost, destinationPort, CancellationToken.None);
 
-var stream = tcp.GetStream(); // the tunnel — speak HTTP, TLS, or anything else
+var stream = tcp.GetStream(); // the tunnel: speak HTTP, TLS or anything else
 ```
 
 A single `Socks5ProxyClient` instance is reusable across many connections; the handshake is negotiated per connection.
 
 ### Send UDP through a SOCKS5 proxy (UDP ASSOCIATE)
 
-```csharp
-using System.Net;
-using System.Net.Sockets;
-using VpnHood.Net.Proxies.Socks5ProxyClients;
-
+```csharp Snippet:Socks5Udp
 var client = new Socks5ProxyClient(new Socks5ProxyClientOptions {
-    ProxyEndPoint = new IPEndPoint(IPAddress.Loopback, 1080)
+    ProxyEndPoint = proxyEndPoint
 });
 
-// local UDP socket used to exchange datagrams with the proxy
+// the local UDP socket that exchanges datagrams with the proxy
 using var udp = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
 var localUdpEndPoint = (IPEndPoint)udp.Client.LocalEndPoint!;
 
-// the TCP control connection must stay open for the lifetime of the association
+// the association lasts while this TCP control connection stays open, with nothing more sent on it
 using var controlTcp = new TcpClient();
 var relayEndPoint = await client.CreateUdpAssociateAsync(controlTcp, localUdpEndPoint, CancellationToken.None);
 
-// wrap a payload in a SOCKS5 UDP header and send it via the relay
-var destination = new IPEndPoint(IPAddress.Parse("1.1.1.1"), 53); // e.g. a DNS query
-var payload = BuildMyDnsQuery();
-var buffer = new byte[3 + 1 + 16 + 2 + payload.Length];
+// wrap the payload in the SOCKS5 UDP header (10 bytes for IPv4, 22 for IPv6) and send it to the relay
+var buffer = new byte[22 + payload.Length];
 var length = Socks5ProxyClient.WriteUdpRequest(buffer, destination, payload);
-await udp.SendAsync(buffer.AsMemory(0, length).ToArray(), relayEndPoint);
+await udp.SendAsync(buffer.AsMemory(0, length), relayEndPoint);
 
-// receive and unwrap the response
+// receive the answer and unwrap it
 var result = await udp.ReceiveAsync();
-var from = Socks5ProxyClient.ParseUdpResponse(result.Buffer, out var responsePayload);
+var from = Socks5ProxyClient.ParseUdpResponse(result.Buffer, out var answer);
 ```
 
 ### Run an HTTP proxy server
 
-```csharp
-using System.Net;
-using VpnHood.Net.Proxies.HttpProxyServers;
-
+```csharp Snippet:HttpServer
 using var server = new HttpProxyServer(new HttpProxyServerOptions {
-    ListenEndPoint = new IPEndPoint(IPAddress.Loopback, 8080),
-    Username = null, // set both to require Basic authentication
-    Password = null
+    ListenEndPoint = new IPEndPoint(IPAddress.Loopback, 0), // 0: the system picks a free port
+    Username = "user", // set a user name to require Basic authentication
+    Password = "pass"
 });
+
 server.Start();
+var proxyEndPoint = server.ListenerEndPoint;
 ```
 
 Handles `CONNECT` tunnels (HTTPS traffic, IPv6 authorities like `[::1]:443` included) and forwards plain absolute-URI requests (`GET http://… HTTP/1.1`) with the client's headers preserved.
 
 ### Run an HTTPS proxy server (TLS between client and proxy)
 
-```csharp
-using System.Net;
-using VpnHood.Net.Proxies.HttpProxyServers;
-
+```csharp Snippet:HttpsServer
 using var server = new HttpsProxyServer(new HttpProxyServerOptions {
-    ListenEndPoint = new IPEndPoint(IPAddress.Loopback, 8443),
-    ServerCertificate = myCertificate // X509Certificate2 with a private key
+    ListenEndPoint = new IPEndPoint(IPAddress.Loopback, 0), // 0: the system picks a free port
+    ServerCertificate = certificate // an X509Certificate2 with its private key
 });
+
 server.Start();
 ```
 
 ### Connect through an HTTP(S) proxy
 
-```csharp
-using System.Net;
-using System.Net.Sockets;
-using VpnHood.Net.Proxies.HttpProxyClients;
-
+```csharp Snippet:HttpConnect
 var client = new HttpProxyClient(new HttpProxyClientOptions {
-    ProxyEndPoint = new IPEndPoint(IPAddress.Loopback, 8443),
-    Username = "user",            // optional Basic auth
+    ProxyEndPoint = proxyEndPoint,
+    Username = "user", // Basic authentication, sent with every request
     Password = "pass",
-    UseTls = true,                // TLS between you and the proxy (HTTPS proxy)
-    ProxyHost = "proxy.example",  // TLS SNI / certificate name (optional)
-    AllowInvalidCertificates = false
+    UseTls = false // true for an HTTPS proxy, with ProxyHost as the name on its certificate
 });
 
 using var tcp = new TcpClient();
-await client.ConnectAsync(tcp, "example.com", 443, CancellationToken.None);
+await client.ConnectAsync(tcp, destinationHost, destinationPort, CancellationToken.None);
 
-// With UseTls the tunnel runs inside the TLS session — always take the
-// stream from the client rather than tcp.GetStream():
+// Take the tunnel from the client: with UseTls, the connection's own stream would bypass TLS.
 var stream = client.GetStream(tcp);
 ```
 
@@ -168,18 +139,16 @@ The client accepts any `2xx` CONNECT response and maps proxy errors (407, 429, 5
 
 ### Connect through a SOCKS4/4a proxy
 
-```csharp
-using System.Net;
-using System.Net.Sockets;
-using VpnHood.Net.Proxies.Socks4ProxyClients;
-
+```csharp Snippet:Socks4Connect
 var client = new Socks4ProxyClient(new Socks4ProxyClientOptions {
-    ProxyEndPoint = new IPEndPoint(IPAddress.Loopback, 1080),
-    UserName = null // optional SOCKS4 user-id
+    ProxyEndPoint = proxyEndPoint,
+    UserName = null // the SOCKS4 user ID, when the proxy wants one
 });
 
 using var tcp = new TcpClient();
-await client.ConnectAsync(tcp, "example.com", 80, CancellationToken.None); // host names use SOCKS4a
+await client.ConnectAsync(tcp, destinationHost, destinationPort, CancellationToken.None); // a host name uses SOCKS4a
+
+var stream = tcp.GetStream(); // the tunnel
 ```
 
 ## Command-line apps

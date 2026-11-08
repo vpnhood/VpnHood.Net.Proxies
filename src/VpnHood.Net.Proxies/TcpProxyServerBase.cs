@@ -5,6 +5,23 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace VpnHood.Net.Proxies;
 
+/// <summary>
+/// Provides the listener, the connection limit and the lifetime of a TCP proxy server; a derived class serves
+/// each connection.
+/// </summary>
+/// <remarks>
+/// The server accepts connections from <see cref="Start"/> until <see cref="Stop"/> or <see cref="Dispose()"/>,
+/// and passes each to <see cref="HandleClientAsync"/> on its own task. It can start again after it stops, but
+/// not after it is disposed. <see cref="Start"/>, <see cref="Stop"/> and <see cref="Dispose()"/> may be called
+/// from any thread.
+/// </remarks>
+/// <param name="listenEndPoint">The address and port to listen on. Port 0 lets the system choose one.</param>
+/// <param name="backlog">The maximum number of pending connections the listener queues.</param>
+/// <param name="maxConnections">
+/// The maximum number of connections served at once; a connection beyond it is accepted and closed at once.
+/// </param>
+/// <param name="logger">The logger for the server's events, or <see langword="null"/> for none.</param>
+/// <exception cref="ArgumentOutOfRangeException"><paramref name="backlog"/> or <paramref name="maxConnections"/> is zero or negative.</exception>
 public abstract class TcpProxyServerBase(
     IPEndPoint listenEndPoint,
     int backlog,
@@ -12,6 +29,9 @@ public abstract class TcpProxyServerBase(
     ILogger? logger
 ) : IDisposable
 {
+    /// <summary>
+    /// The logger the server writes to; a logger that discards everything when none was given.
+    /// </summary>
     protected readonly ILogger Logger = logger ?? NullLogger.Instance;
     private readonly Lock _startStopLock = new();
     private CancellationTokenSource? _serverCts;
@@ -28,12 +48,39 @@ public abstract class TcpProxyServerBase(
         ? maxConnections
         : throw new ArgumentOutOfRangeException(nameof(maxConnections), maxConnections, "MaxConnections must be positive.");
 
+    /// <summary>
+    /// Gets the address and port the server listens on. Once the server has started, it carries the port the
+    /// system chose when the configured port is 0.
+    /// </summary>
     public IPEndPoint ListenerEndPoint => (IPEndPoint)_listener.LocalEndpoint;
+
+    /// <summary>
+    /// Gets a value indicating whether the server is listening.
+    /// </summary>
     public bool IsStarted => _serverCts is not null;
+
+    /// <summary>
+    /// Gets the number of client connections being served now.
+    /// </summary>
     public int ActiveConnectionCount => Volatile.Read(ref _connectionCount);
 
+    /// <summary>
+    /// Serves one client connection.
+    /// </summary>
+    /// <remarks>
+    /// It runs on its own task for each accepted connection. When the returned task completes, the base class
+    /// disposes <paramref name="client"/>, and it logs any exception the task throws.
+    /// </remarks>
+    /// <param name="client">The accepted connection.</param>
+    /// <param name="cancellationToken">The token that is canceled when the server stops.</param>
+    /// <returns>A task that represents the asynchronous operation. It completes when the connection is done.</returns>
     protected abstract Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Starts listening for connections. Calling it on a server that is listening does nothing.
+    /// </summary>
+    /// <exception cref="ObjectDisposedException">The server is disposed.</exception>
+    /// <exception cref="SocketException">The listener cannot use its address and port, for example because another socket holds them.</exception>
     public void Start()
     {
         lock (_startStopLock)
@@ -49,6 +96,10 @@ public abstract class TcpProxyServerBase(
         Logger.LogInformation("{ServerType} started on {EndPoint}", GetType().Name, ListenerEndPoint);
     }
 
+    /// <summary>
+    /// Stops listening and cancels the token of every connection being served, without waiting for them to end.
+    /// Calling it on a server that is not listening does nothing.
+    /// </summary>
     public void Stop()
     {
         bool stopped;
@@ -77,8 +128,18 @@ public abstract class TcpProxyServerBase(
     }
 
     /// <summary>
-    /// Starts the server and keeps it running until the token is cancelled.
+    /// Starts the server, keeps it running until <paramref name="cancellationToken"/> is canceled, then stops it.
     /// </summary>
+    /// <param name="cancellationToken">
+    /// The token that stops the server. With the default, which is never canceled, the task never completes,
+    /// even after <see cref="Stop"/> or <see cref="Dispose()"/>.
+    /// </param>
+    /// <returns>
+    /// A task that represents the asynchronous operation. It completes when the server has stopped, and does
+    /// not fault when the token is canceled.
+    /// </returns>
+    /// <exception cref="ObjectDisposedException">The server is disposed.</exception>
+    /// <exception cref="SocketException">The listener cannot use its address and port, for example because another socket holds them.</exception>
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
         Start();
@@ -160,9 +221,11 @@ public abstract class TcpProxyServerBase(
     }
 
     /// <summary>
-    /// The client's remote endpoint, or null when the connection is already dead — reading
-    /// RemoteEndPoint on a reset socket can throw.
+    /// Gets a client's remote address and port, or <see langword="null"/> when they cannot be read, as on a
+    /// connection that was already reset.
     /// </summary>
+    /// <param name="client">The client connection.</param>
+    /// <returns>The remote endpoint, or <see langword="null"/>.</returns>
     protected static IPEndPoint? TryGetRemoteEndPoint(TcpClient client)
     {
         try
@@ -175,6 +238,13 @@ public abstract class TcpProxyServerBase(
         }
     }
 
+    /// <summary>
+    /// Stops the server and releases its listener.
+    /// </summary>
+    /// <param name="disposing">
+    /// <see langword="true"/> when called from <see cref="Dispose()"/>; <see langword="false"/> when called from
+    /// a finalizer, in which case nothing is released.
+    /// </param>
     protected virtual void Dispose(bool disposing)
     {
         if (disposing)
@@ -197,6 +267,9 @@ public abstract class TcpProxyServerBase(
         }
     }
 
+    /// <summary>
+    /// Stops the server and releases its listener. The server cannot start again.
+    /// </summary>
     public void Dispose()
     {
         Dispose(true);

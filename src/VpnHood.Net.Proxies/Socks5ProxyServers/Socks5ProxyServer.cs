@@ -7,6 +7,44 @@ using System.Buffers;
 
 namespace VpnHood.Net.Proxies.Socks5ProxyServers;
 
+/// <summary>
+/// Represents a SOCKS5 proxy server (RFC 1928) that serves CONNECT and UDP ASSOCIATE requests, with optional
+/// username and password authentication (RFC 1929).
+/// </summary>
+/// <remarks>
+/// <para>
+/// The server resolves a domain name in a request itself, and prefers an IPv4 address. It answers BIND, and
+/// any other command, with <see cref="Socks5CommandReply.CommandNotSupported"/>.
+/// </para>
+/// <para>
+/// A UDP association relays datagrams between the client and the destinations it sends to, until the
+/// request's TCP connection closes or anything more arrives on it. The client's datagrams are taken from the
+/// UDP endpoint it declared, where an unspecified address stands for its TCP connection's; when it declared
+/// none (port zero), the first datagram from its address claims the association. Replies are taken from the
+/// destinations the client has sent to. Datagrams from any other sender, and fragmented ones, are dropped. The
+/// relay socket takes the address family of the TCP connection, so an association made over IPv4 reaches only
+/// IPv4 destinations. An association remembers up to 2048 destinations; past that, it forgets those silent
+/// for 60 seconds, then the least recently active, and drops what a forgotten destination sends.
+/// </para>
+/// </remarks>
+/// <example>
+/// <code snippet="Snippet:Socks5Server" language="csharp">
+/// using var server = new Socks5ProxyServer(new Socks5ProxyServerOptions {
+///     ListenEndPoint = new IPEndPoint(IPAddress.Loopback, 0), // 0: the system picks a free port
+///     Username = null, // set a user name to require RFC 1929 authentication
+///     Password = null
+/// });
+///
+/// server.Start(); // or: await server.RunAsync(cancellationToken);
+/// var proxyEndPoint = server.ListenerEndPoint;
+/// </code>
+/// </example>
+/// <param name="options">The server's settings.</param>
+/// <param name="logger">The logger for the server's events, or <see langword="null"/> for none.</param>
+/// <exception cref="ArgumentOutOfRangeException">
+/// <see cref="Socks5ProxyServerOptions.Backlog"/> or <see cref="Socks5ProxyServerOptions.MaxConnections"/> is zero
+/// or negative.
+/// </exception>
 public sealed class Socks5ProxyServer(
     Socks5ProxyServerOptions options,
     ILogger<Socks5ProxyServer>? logger = null)
@@ -18,6 +56,7 @@ public sealed class Socks5ProxyServer(
     private const int MaxUdpDestinations = 2048;
     private static readonly TimeSpan UdpDestinationIdleTimeout = TimeSpan.FromSeconds(60);
 
+    /// <inheritdoc/>
     protected override async Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken)
     {
         var clientEndpoint = TryGetRemoteEndPoint(client) ?? new IPEndPoint(IPAddress.None, 0);

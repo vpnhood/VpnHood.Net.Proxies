@@ -5,8 +5,9 @@
 		<PackageIcon>VpnHood.png</PackageIcon>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
-		<!-- CS1591: public members without XML docs. Remove once the public API is fully documented. -->
-		<NoWarn>$(NoWarn);CS1591</NoWarn>
+		<!-- The whole public API is documented: a missing or broken doc comment fails the build, so it stays that
+		     way. CS1591 must never be in NoWarn as well, because NoWarn beats WarningsAsErrors. -->
+		<WarningsAsErrors>$(WarningsAsErrors);CS0419;CS1570;CS1571;CS1572;CS1573;CS1574;CS1580;CS1581;CS1584;CS1587;CS1589;CS1590;CS1591;CS1592;CS1658;CS1710;CS1711;CS1712;CS1723;CS1734;CS1735</WarningsAsErrors>
 		<IsTrimmable>true</IsTrimmable>
 		<IsAotCompatible>true</IsAotCompatible>
 	</PropertyGroup>

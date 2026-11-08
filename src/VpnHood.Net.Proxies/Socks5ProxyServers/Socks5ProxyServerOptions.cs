@@ -2,28 +2,75 @@ using System.Net;
 
 namespace VpnHood.Net.Proxies.Socks5ProxyServers;
 
+/// <summary>
+/// Provides the settings of a <see cref="Socks5ProxyServer"/>.
+/// </summary>
 public class Socks5ProxyServerOptions
 {
+    /// <summary>
+    /// Gets the address and port the server listens on. Port 0 lets the system choose one, which
+    /// <see cref="TcpProxyServerBase.ListenerEndPoint"/> shows once the server has started.
+    /// </summary>
     public required IPEndPoint ListenEndPoint { get; init; }
 
+    /// <summary>
+    /// Gets the user name clients must give (RFC 1929), or <see langword="null"/> to serve clients without
+    /// credentials.
+    /// </summary>
+    /// <remarks>
+    /// When it is set, a client must authenticate with it and <see cref="Password"/>, and a client that offers
+    /// no username and password authentication is refused. When it is <see langword="null"/>, a client that
+    /// offers only username and password authentication is served whatever credentials it gives.
+    /// </remarks>
     public string? Username { get; init; }
+
+    /// <summary>
+    /// Gets the password clients must give with <see cref="Username"/>. <see langword="null"/> means an empty
+    /// password.
+    /// </summary>
     public string? Password { get; init; }
+
+    /// <summary>
+    /// Gets how long a client has to complete the method negotiation and the authentication. The default is
+    /// 15 seconds.
+    /// </summary>
+    /// <remarks>
+    /// The request that follows, and the server's lookup of a domain name in it, have no deadline of their own.
+    /// </remarks>
     public TimeSpan HandshakeTimeout { get; init; } = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// Gets or sets how long the server waits for a destination to accept a TCP connection. The default is
+    /// 30 seconds.
+    /// </summary>
+    /// <remarks>
+    /// When it elapses, the client gets <see cref="Socks5Proxy.Socks5CommandReply.TtlExpired"/>. It is read for
+    /// each connection, so a change applies to the next one.
+    /// </remarks>
     public TimeSpan HostConnectionTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// After one tunnel direction reaches EOF (TCP half-close), how long the other direction
-    /// may keep draining before the tunnel is torn down. Bounds how long an idle peer can
-    /// retain a tunnel's buffers, sockets and handler state.
+    /// Gets how long, after one direction of a tunnel has ended (a TCP half-close) and the server has passed that
+    /// end on, the other direction may still carry data before the tunnel is closed. The default is 15 seconds.
     /// </summary>
     public TimeSpan TunnelHalfCloseTimeout { get; init; } = TimeSpan.FromSeconds(15);
 
+    /// <summary>
+    /// Gets the maximum number of pending connections the listener queues. The default is 512.
+    /// </summary>
+    /// <remarks>
+    /// It must be positive: the server's constructor throws <see cref="ArgumentOutOfRangeException"/> otherwise.
+    /// </remarks>
     public int Backlog { get; init; } = 512;
 
     /// <summary>
-    /// Hard cap on concurrent client connections; connections beyond it are accepted and
-    /// immediately closed. Unlimited by default — memory-constrained hosts (e.g. a mobile
-    /// network extension) should set an explicit cap sized to their budget.
+    /// Gets the maximum number of client connections the server serves at once. The default is
+    /// <see cref="int.MaxValue"/>, which means no limit.
     /// </summary>
+    /// <remarks>
+    /// A connection beyond it is accepted and closed at once. On a host with little memory, such as a mobile
+    /// network extension, set a limit that fits its budget. It must be positive: the server's constructor
+    /// throws <see cref="ArgumentOutOfRangeException"/> otherwise.
+    /// </remarks>
     public int MaxConnections { get; init; } = int.MaxValue;
 }

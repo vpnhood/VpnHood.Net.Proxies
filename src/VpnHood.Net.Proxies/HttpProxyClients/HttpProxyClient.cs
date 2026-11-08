@@ -9,6 +9,39 @@ using Microsoft.Extensions.Logging;
 
 namespace VpnHood.Net.Proxies.HttpProxyClients;
 
+/// <summary>
+/// Opens TCP tunnels through an HTTP proxy with the CONNECT method, optionally over TLS to the proxy itself (an
+/// HTTPS proxy) and with Basic authentication.
+/// </summary>
+/// <remarks>
+/// <para>
+/// One instance can serve many connections at once. With <see cref="HttpProxyClientOptions.UseTls"/>, a tunnel
+/// runs inside a TLS session, so read and write it through <see cref="GetStream"/>, not
+/// <see cref="TcpClient.GetStream"/>.
+/// </para>
+/// <para>
+/// Any 2xx answer opens the tunnel. The answer is read only up to its end, so data that a destination sends
+/// first, such as an SMTP or SSH banner, stays in the stream for the caller.
+/// </para>
+/// </remarks>
+/// <example>
+/// <code snippet="Snippet:HttpConnect" language="csharp">
+/// var client = new HttpProxyClient(new HttpProxyClientOptions {
+///     ProxyEndPoint = proxyEndPoint,
+///     Username = "user", // Basic authentication, sent with every request
+///     Password = "pass",
+///     UseTls = false // true for an HTTPS proxy, with ProxyHost as the name on its certificate
+/// });
+///
+/// using var tcp = new TcpClient();
+/// await client.ConnectAsync(tcp, destinationHost, destinationPort, CancellationToken.None);
+///
+/// // Take the tunnel from the client: with UseTls, the connection's own stream would bypass TLS.
+/// var stream = client.GetStream(tcp);
+/// </code>
+/// </example>
+/// <param name="options">The proxy's address, credentials and TLS settings.</param>
+/// <param name="logger">The logger for the client's progress and failures, or <see langword="null"/> for none.</param>
 public class HttpProxyClient(
     HttpProxyClientOptions options,
     ILogger<HttpProxyClient>? logger = null)
@@ -18,21 +51,78 @@ public class HttpProxyClient(
     // retrieve it after ConnectAsync (tcpClient.GetStream() would bypass the TLS layer)
     private readonly ConditionalWeakTable<TcpClient, Stream> _tunnelStreams = new();
 
+    /// <summary>
+    /// Opens a tunnel through the proxy to an IP endpoint.
+    /// </summary>
+    /// <param name="tcpClient">
+    /// The connection to use. When it is not connected, it is connected to <see cref="ProxyEndPoint"/> first.
+    /// When the task completes, <see cref="GetStream"/> gives the tunnel; when the exchange with the proxy fails, it is
+    /// closed.
+    /// </param>
+    /// <param name="destination">The destination's address and port.</param>
+    /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous operation. It completes when the tunnel is open.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The port of <paramref name="destination"/> is zero.</exception>
+    /// <exception cref="ProxyClientException">
+    /// The proxy refused the request or did not answer as an HTTP proxy; <see cref="SocketException.SocketErrorCode"/>
+    /// tells why.
+    /// </exception>
+    /// <exception cref="AuthenticationException">The TLS handshake with the proxy failed.</exception>
+    /// <exception cref="TimeoutException">The proxy's answer did not arrive within 30 seconds of the request.</exception>
+    /// <exception cref="IOException">The proxy closed the connection before its answer was complete.</exception>
+    /// <exception cref="SocketException">The connection to the proxy failed.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was canceled.</exception>
     public async Task ConnectAsync(TcpClient tcpClient, IPEndPoint destination, CancellationToken cancellationToken)
         => await ConnectAsync(tcpClient, destination.Address.ToString(), destination.Port, cancellationToken).ConfigureAwait(false);
 
+    /// <inheritdoc/>
     public IPEndPoint ProxyEndPoint => options.ProxyEndPoint;
 
     /// <summary>
-    /// Returns the tunnel stream for a connection established by ConnectAsync.
-    /// This is the SslStream when UseTls is set; otherwise the plain NetworkStream.
+    /// Gets the stream that carries the tunnel of a connection opened by <see cref="ConnectAsync(TcpClient, string, int, CancellationToken)"/>.
     /// </summary>
+    /// <param name="tcpClient">The connection.</param>
+    /// <returns>
+    /// The TLS stream when <see cref="HttpProxyClientOptions.UseTls"/> is <see langword="true"/>; otherwise, and
+    /// for a connection this client opened no tunnel on, the connection's <see cref="NetworkStream"/>.
+    /// </returns>
+    /// <remarks>
+    /// Disposing the TLS stream leaves the TCP connection open: dispose the <see cref="TcpClient"/> to close the
+    /// tunnel.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> is <see langword="null"/>.</exception>
     public Stream GetStream(TcpClient tcpClient)
     {
         ArgumentNullException.ThrowIfNull(tcpClient);
         return _tunnelStreams.TryGetValue(tcpClient, out var stream) ? stream : tcpClient.GetStream();
     }
 
+    /// <summary>
+    /// Opens a tunnel through the proxy to a host, given by name or IP address.
+    /// </summary>
+    /// <param name="tcpClient">
+    /// The connection to use. When it is not connected, it is connected to <see cref="ProxyEndPoint"/> first.
+    /// When the task completes, <see cref="GetStream"/> gives the tunnel; when the exchange with the proxy fails, it is
+    /// closed.
+    /// </param>
+    /// <param name="host">The destination's host name or IP address literal. A name is sent for the proxy to resolve.</param>
+    /// <param name="port">The destination's port, from 1 to 65535.</param>
+    /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous operation. It completes when the tunnel is open.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> or <paramref name="host"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="host"/> is empty or white space.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="port"/> is zero or negative.</exception>
+    /// <exception cref="ProxyClientException">
+    /// The proxy refused the request, did not answer as an HTTP proxy, or sent headers over 8 KB;
+    /// <see cref="SocketException.SocketErrorCode"/> tells why. For example, 407 gives
+    /// <see cref="SocketError.AccessDenied"/>, and 502 gives <see cref="SocketError.HostUnreachable"/>.
+    /// </exception>
+    /// <exception cref="AuthenticationException">The TLS handshake with the proxy failed.</exception>
+    /// <exception cref="TimeoutException">The proxy's answer did not arrive within 30 seconds of the request.</exception>
+    /// <exception cref="IOException">The proxy closed the connection before its answer was complete.</exception>
+    /// <exception cref="SocketException">The connection to the proxy failed.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was canceled.</exception>
     public async Task ConnectAsync(TcpClient tcpClient, string host, int port, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(tcpClient);
@@ -78,6 +168,20 @@ public class HttpProxyClient(
         }
     }
 
+    /// <summary>
+    /// Connects to the proxy and, with <see cref="HttpProxyClientOptions.UseTls"/>, completes the TLS handshake,
+    /// without asking for a tunnel.
+    /// </summary>
+    /// <param name="tcpClient">
+    /// A connection that is not connected yet. Close it after the check: its TLS session is not kept, so it
+    /// cannot carry a tunnel. When the check fails, it is closed.
+    /// </param>
+    /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous operation. It completes when the check passes.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> is <see langword="null"/>.</exception>
+    /// <exception cref="AuthenticationException">The TLS handshake with the proxy failed.</exception>
+    /// <exception cref="SocketException">The connection to the proxy failed.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was canceled.</exception>
     public async Task CheckConnectionAsync(TcpClient tcpClient, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(tcpClient);

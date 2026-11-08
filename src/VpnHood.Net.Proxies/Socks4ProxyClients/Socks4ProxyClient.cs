@@ -4,11 +4,52 @@ using System.Text;
 
 namespace VpnHood.Net.Proxies.Socks4ProxyClients;
 
-// Minimal SOCKS4/4a client supporting CONNECT only
+/// <summary>
+/// Opens TCP tunnels through a SOCKS4 proxy, or a SOCKS4a proxy for host names. It supports CONNECT only, and
+/// IPv4 destinations only.
+/// </summary>
+/// <remarks>
+/// An instance keeps no per-connection state, so it can serve many connections at once.
+/// </remarks>
+/// <example>
+/// <code snippet="Snippet:Socks4Connect" language="csharp">
+/// var client = new Socks4ProxyClient(new Socks4ProxyClientOptions {
+///     ProxyEndPoint = proxyEndPoint,
+///     UserName = null // the SOCKS4 user ID, when the proxy wants one
+/// });
+///
+/// using var tcp = new TcpClient();
+/// await client.ConnectAsync(tcp, destinationHost, destinationPort, CancellationToken.None); // a host name uses SOCKS4a
+///
+/// var stream = tcp.GetStream(); // the tunnel
+/// </code>
+/// </example>
+/// <param name="options">The proxy's address and the user ID to send.</param>
 public class Socks4ProxyClient(Socks4ProxyClientOptions options) : IProxyClient
 {
+    /// <inheritdoc/>
     public IPEndPoint ProxyEndPoint => options.ProxyEndPoint;
 
+    /// <summary>
+    /// Opens a tunnel through the proxy to an IPv4 endpoint.
+    /// </summary>
+    /// <param name="tcpClient">
+    /// The connection to use. When it is not connected, it is connected to <see cref="ProxyEndPoint"/> first.
+    /// When the task completes, its <see cref="TcpClient.GetStream"/> carries the tunnel; when the
+    /// exchange with the proxy fails, it is closed.
+    /// </param>
+    /// <param name="destination">The destination's IPv4 address and port.</param>
+    /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous operation. It completes when the tunnel is open.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> or <paramref name="destination"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The port of <paramref name="destination"/> is zero.</exception>
+    /// <exception cref="ProxyClientException">
+    /// <paramref name="destination"/> is IPv6, which SOCKS4 cannot carry; the proxy's answer is not SOCKS4; or
+    /// the proxy refused the request. <see cref="SocketException.SocketErrorCode"/> tells which.
+    /// </exception>
+    /// <exception cref="SocketException">The connection to the proxy failed.</exception>
+    /// <exception cref="EndOfStreamException">The proxy closed the connection before its answer was complete.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was canceled.</exception>
     public Task ConnectAsync(TcpClient tcpClient, IPEndPoint destination, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(destination);
@@ -18,6 +59,31 @@ public class Socks4ProxyClient(Socks4ProxyClientOptions options) : IProxyClient
         return ConnectAsync(tcpClient, destination.Address.ToString(), destination.Port, cancellationToken);
     }
 
+    /// <summary>
+    /// Opens a tunnel through the proxy to a host, given by name or IPv4 address.
+    /// </summary>
+    /// <param name="tcpClient">
+    /// The connection to use. When it is not connected, it is connected to <see cref="ProxyEndPoint"/> first.
+    /// When the task completes, its <see cref="TcpClient.GetStream"/> carries the tunnel; when the
+    /// exchange with the proxy fails, it is closed.
+    /// </param>
+    /// <param name="host">
+    /// The destination's host name or IPv4 address literal. A name is sent for the proxy to resolve, as SOCKS4a
+    /// does; a proxy that speaks only SOCKS4 refuses it.
+    /// </param>
+    /// <param name="port">The destination's port, from 1 to 65535.</param>
+    /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous operation. It completes when the tunnel is open.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> or <paramref name="host"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="host"/> is empty or white space.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="port"/> is zero or negative.</exception>
+    /// <exception cref="ProxyClientException">
+    /// <paramref name="host"/> is an IPv6 literal, which SOCKS4 cannot carry; the proxy's answer is not SOCKS4;
+    /// or the proxy refused the request. <see cref="SocketException.SocketErrorCode"/> tells which.
+    /// </exception>
+    /// <exception cref="SocketException">The connection to the proxy failed.</exception>
+    /// <exception cref="EndOfStreamException">The proxy closed the connection before its answer was complete.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was canceled.</exception>
     public async Task ConnectAsync(TcpClient tcpClient, string host, int port, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(tcpClient);
@@ -56,6 +122,15 @@ public class Socks4ProxyClient(Socks4ProxyClientOptions options) : IProxyClient
         }
     }
 
+    /// <summary>
+    /// Opens a TCP connection to the proxy. SOCKS4 has no request that checks a proxy without opening a tunnel,
+    /// so this checks only that the proxy accepts connections.
+    /// </summary>
+    /// <param name="tcpClient">A connection that is not connected yet. When the check fails, it is closed.</param>
+    /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous operation. It completes when the connection is open.</returns>
+    /// <exception cref="SocketException">The connection to the proxy failed.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was canceled.</exception>
     public async Task CheckConnectionAsync(TcpClient tcpClient, CancellationToken cancellationToken)
     {
         try {

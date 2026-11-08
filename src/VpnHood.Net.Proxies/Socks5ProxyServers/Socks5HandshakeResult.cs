@@ -2,7 +2,7 @@ using VpnHood.Net.Proxies.Socks5Proxy;
 
 namespace VpnHood.Net.Proxies.Socks5ProxyServers;
 
-public readonly struct Socks5HandshakeResult
+internal readonly struct Socks5HandshakeResult
 {
     public Socks5AuthenticationType AuthType { get; init; }
     public RequestHeader RequestHeader { get; init; }

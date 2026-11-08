@@ -1,6 +1,6 @@
 namespace VpnHood.Net.Proxies.HttpProxyServers;
 
-public readonly struct HttpHandshakeResult
+internal readonly struct HttpHandshakeResult
 {
     public string Method { get; init; }
     public string Target { get; init; }

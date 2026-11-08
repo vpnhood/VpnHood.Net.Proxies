@@ -7,8 +7,29 @@ using Microsoft.Extensions.Logging;
 namespace VpnHood.Net.Proxies.HttpProxyServers;
 
 /// <summary>
-/// An HTTP CONNECT proxy that requires TLS between the client and the proxy itself.
+/// Represents an HTTPS proxy server: an HTTP proxy that clients reach over TLS, and that opens CONNECT tunnels.
 /// </summary>
+/// <remarks>
+/// It speaks TLS 1.2 and 1.3 with <see cref="HttpProxyServerOptions.ServerCertificate"/> and asks for no client
+/// certificate. It serves only CONNECT; any other method gets 405 Method Not Allowed.
+/// </remarks>
+/// <example>
+/// <code snippet="Snippet:HttpsServer" language="csharp">
+/// using var server = new HttpsProxyServer(new HttpProxyServerOptions {
+///     ListenEndPoint = new IPEndPoint(IPAddress.Loopback, 0), // 0: the system picks a free port
+///     ServerCertificate = certificate // an X509Certificate2 with its private key
+/// });
+///
+/// server.Start();
+/// </code>
+/// </example>
+/// <param name="options">The server's settings, with its certificate.</param>
+/// <param name="logger">The logger for the server's events, or <see langword="null"/> for none.</param>
+/// <exception cref="ArgumentException"><see cref="HttpProxyServerOptions.ServerCertificate"/> is <see langword="null"/>.</exception>
+/// <exception cref="ArgumentOutOfRangeException">
+/// <see cref="HttpProxyServerOptions.Backlog"/> or <see cref="HttpProxyServerOptions.MaxConnections"/> is zero or
+/// negative.
+/// </exception>
 public sealed class HttpsProxyServer(
     HttpProxyServerOptions options,
     ILogger<HttpsProxyServer>? logger = null)
@@ -17,6 +38,7 @@ public sealed class HttpsProxyServer(
     private readonly X509Certificate2 _serverCertificate = options.ServerCertificate
         ?? throw new ArgumentException("ServerCertificate is required for HTTPS proxy server", nameof(options));
 
+    /// <inheritdoc/>
     protected override async Task HandleClientAsync(TcpClient client, CancellationToken serverCancellationToken)
     {
         var clientEndpointAddress = TryGetRemoteEndPoint(client)?.ToString() ?? "unknown";

@@ -4,6 +4,36 @@ using Microsoft.Extensions.Logging;
 
 namespace VpnHood.Net.Proxies.HttpProxyServers;
 
+/// <summary>
+/// Represents an HTTP proxy server that opens CONNECT tunnels and forwards plain HTTP requests, with optional
+/// Basic authentication.
+/// </summary>
+/// <remarks>
+/// A request with an absolute URI, such as <c>GET http://example.com/ HTTP/1.1</c>, goes to its origin with the
+/// client's headers, minus the hop-by-hop ones (RFC 9110, section 7.6.1), and with <c>Connection: close</c>, so
+/// each such request takes a client connection of its own. A request with an invalid URI gets 400 Bad Request,
+/// and one whose origin cannot be reached gets 502 Bad Gateway, or 504 Gateway Timeout when the connection
+/// attempt runs out of time. A request rejected while it is parsed may get 400 Bad Request or be closed without
+/// an answer.
+/// </remarks>
+/// <example>
+/// <code snippet="Snippet:HttpServer" language="csharp">
+/// using var server = new HttpProxyServer(new HttpProxyServerOptions {
+///     ListenEndPoint = new IPEndPoint(IPAddress.Loopback, 0), // 0: the system picks a free port
+///     Username = "user", // set a user name to require Basic authentication
+///     Password = "pass"
+/// });
+///
+/// server.Start();
+/// var proxyEndPoint = server.ListenerEndPoint;
+/// </code>
+/// </example>
+/// <param name="options">The server's settings. <see cref="HttpProxyServerOptions.ServerCertificate"/> is ignored.</param>
+/// <param name="logger">The logger for the server's events, or <see langword="null"/> for none.</param>
+/// <exception cref="ArgumentOutOfRangeException">
+/// <see cref="HttpProxyServerOptions.Backlog"/> or <see cref="HttpProxyServerOptions.MaxConnections"/> is zero or
+/// negative.
+/// </exception>
 public sealed class HttpProxyServer(
     HttpProxyServerOptions options,
     ILogger<HttpProxyServer>? logger = null)
@@ -15,6 +45,7 @@ public sealed class HttpProxyServer(
         "Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authorization", "Proxy-Authenticate", "TE", "Trailer", "Upgrade"
     };
 
+    /// <inheritdoc/>
     protected override async Task HandleClientAsync(TcpClient client, CancellationToken serverCancellationToken)
     {
         var clientEndpointAddress = TryGetRemoteEndPoint(client)?.ToString() ?? "unknown";
