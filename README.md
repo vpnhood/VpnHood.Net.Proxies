@@ -2,7 +2,7 @@
 
 **Standard proxy clients and servers for .NET** — SOCKS5, SOCKS4/4a, HTTP, and HTTPS, in one small cross-platform library with no native dependencies, built on `async`/`await` and `Span<byte>`.
 
-This is an **independent, general-purpose library**: it implements the standard proxy protocols (RFC 1928, RFC 1929, HTTP CONNECT) and has no dependency on any VPN product. Use it in any .NET application to add proxy support, embed a lightweight proxy server, bridge traffic between networks, or test proxy-aware software. It is maintained by the [VpnHood](https://github.com/vpnhood/vpnhood) team and battle-tested there in production, but it works entirely on its own.
+This is an **independent, general-purpose library**: it implements the standard proxy protocols (RFC 1928, RFC 1929, HTTP CONNECT) and has no dependency on any VPN product. Use it in any .NET application to add proxy support, embed a lightweight proxy server, bridge traffic between networks, or test proxy-aware software. It is maintained by [VpnHood](https://github.com/vpnhood/vpnhood) and battle-tested there in production, but it works entirely on its own.
 
 ## Feature matrix
 
@@ -179,4 +179,4 @@ dotnet test
 
 ## License
 
-[LGPL-2.1](https://github.com/vpnhood/VpnHood.Net.Proxies/blob/main/LICENSE) © OmegaHood LLC — an independent library maintained by the [VpnHood](https://github.com/vpnhood/vpnhood) team.
+[LGPL-2.1](https://github.com/vpnhood/VpnHood.Net.Proxies/blob/main/LICENSE) © OmegaHood LLC — an independent library maintained by [VpnHood](https://github.com/vpnhood/vpnhood).
