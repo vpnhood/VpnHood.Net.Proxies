@@ -21,8 +21,8 @@ internal static class ProxyStreamPump
     /// </summary>
     /// <param name="clientStream">Stream to/from the proxy client.</param>
     /// <param name="remoteStream">Stream to/from the destination host.</param>
-    /// <param name="halfCloseTimeout">How long the surviving direction may keep draining after
-    /// the first direction reaches EOF.</param>
+    /// <param name="halfCloseTimeout">How long, after the first direction reaches EOF, passing that
+    /// EOF on and the surviving direction's draining may take together.</param>
     /// <param name="cancellationToken">Cancels both directions and tears the tunnel down.</param>
     /// <param name="clientSocket">Socket behind <paramref name="clientStream"/>; only needed when the
     /// stream does not expose it itself (e.g. SslStream). Derived automatically for NetworkStream.</param>
@@ -53,13 +53,15 @@ internal static class ProxyStreamPump
             var (drainedStream, drainedSocket) = finished == clientToRemote
                 ? (remoteStream, remoteSocket)
                 : (clientStream, clientSocket);
-            await TryShutdownSendAsync(drainedStream, drainedSocket).ConfigureAwait(false);
-
-            // Give the remaining direction a bounded time to drain, then tear down.
             var remaining = finished == clientToRemote ? remoteToClient : clientToRemote;
+
+            // One limit covers passing the EOF on and the remaining direction's drain: a TLS
+            // close_notify waits on a peer that reads nothing, as the drain waits on one that
+            // sends nothing, and either would hold the tunnel for as long as that peer liked.
             try
             {
-                await remaining.WaitAsync(halfCloseTimeout, cancellationToken).ConfigureAwait(false);
+                await FinishHalfCloseAsync(drainedStream, drainedSocket, remaining)
+                    .WaitAsync(halfCloseTimeout, cancellationToken).ConfigureAwait(false);
             }
             catch
             {
@@ -75,6 +77,21 @@ internal static class ProxyStreamPump
                 try { await task.ConfigureAwait(false); }
                 catch { /* Ignore exceptions during cleanup */ }
             }
+        }
+    }
+
+    // It may outlive the pump, when the limit ends while a close_notify still waits: the caller then
+    // closes the streams, which ends that wait, so nothing here may throw into a task nobody awaits.
+    private static async Task FinishHalfCloseAsync(Stream drainedStream, Socket? drainedSocket, Task remaining)
+    {
+        await TryShutdownSendAsync(drainedStream, drainedSocket).ConfigureAwait(false);
+        try
+        {
+            await remaining.ConfigureAwait(false);
+        }
+        catch
+        {
+            // the tunnel is torn down either way
         }
     }
 

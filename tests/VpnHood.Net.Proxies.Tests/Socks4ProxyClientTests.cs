@@ -58,4 +58,38 @@ public class Socks4ProxyClientTests
             listener.Stop();
         }
     }
+
+    [TestMethod]
+    public async Task Socks4_Connect_HostNameWithPortAbove65535_Throws()
+    {
+        // the request has two bytes for the port: a larger one must be refused, not cut down to them
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var options = new Socks4ProxyClientOptions { ProxyEndPoint = (IPEndPoint)listener.LocalEndpoint };
+            var client = new Socks4ProxyClient(options);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var tcp = new TcpClient();
+
+            await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(() =>
+                client.ConnectAsync(tcp, "example.com", 65536, cts.Token));
+            Assert.IsFalse(tcp.Connected, "the port is refused before anything is sent");
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [TestMethod]
+    public async Task Socks4_CheckConnection_NullConnection_Throws()
+    {
+        var options = new Socks4ProxyClientOptions { ProxyEndPoint = new IPEndPoint(IPAddress.Loopback, 1080) };
+        var client = new Socks4ProxyClient(options);
+
+        await Assert.ThrowsExactlyAsync<ArgumentNullException>(() =>
+            client.CheckConnectionAsync(null!, CancellationToken.None));
+    }
 }

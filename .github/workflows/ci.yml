@@ -16,6 +16,11 @@ jobs:
       - run: dotnet build -c Release
       - run: dotnet test -c Release --no-build
 
+      # The library must also compile and pack from its project alone, as a build without the solution does:
+      # a build setting that leans on the solution (SolutionDir) breaks only there.
+      - run: dotnet build src/VpnHood.Net.Proxies -c Release --no-incremental
+      - run: dotnet pack src/VpnHood.Net.Proxies -c Release --no-build -o ${{ runner.temp }}/nupkg
+
       # The README's and the doc comments' examples must match the test regions they are copied from
       # (tests/VpnHood.Net.Proxies.Tests/ReadmeExampleTests.cs). The script is VpnHood's, shared by its modules.
       - name: Check out vpnhood/VpnHood's pub scripts

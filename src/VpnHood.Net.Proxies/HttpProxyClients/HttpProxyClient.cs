@@ -62,7 +62,7 @@ public class HttpProxyClient(
     /// <param name="destination">The destination's address and port.</param>
     /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
     /// <returns>A task that represents the asynchronous operation. It completes when the tunnel is open.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> or <paramref name="destination"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">The port of <paramref name="destination"/> is zero.</exception>
     /// <exception cref="ProxyClientException">
     /// The proxy refused the request or did not answer as an HTTP proxy; <see cref="SocketException.SocketErrorCode"/>
@@ -74,7 +74,11 @@ public class HttpProxyClient(
     /// <exception cref="SocketException">The connection to the proxy failed.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was canceled.</exception>
     public async Task ConnectAsync(TcpClient tcpClient, IPEndPoint destination, CancellationToken cancellationToken)
-        => await ConnectAsync(tcpClient, destination.Address.ToString(), destination.Port, cancellationToken).ConfigureAwait(false);
+    {
+        ArgumentNullException.ThrowIfNull(tcpClient);
+        ArgumentNullException.ThrowIfNull(destination);
+        await ConnectAsync(tcpClient, destination.Address.ToString(), destination.Port, cancellationToken).ConfigureAwait(false);
+    }
 
     /// <inheritdoc/>
     public IPEndPoint ProxyEndPoint => options.ProxyEndPoint;
@@ -118,7 +122,7 @@ public class HttpProxyClient(
     /// <returns>A task that represents the asynchronous operation. It completes when the tunnel is open.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> or <paramref name="host"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException"><paramref name="host"/> is empty or white space.</exception>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="port"/> is zero or negative.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="port"/> is less than 1 or greater than 65535.</exception>
     /// <exception cref="ProxyClientException">
     /// The proxy refused the request, did not answer as an HTTP proxy, or sent headers over 8 KB;
     /// <see cref="SocketException.SocketErrorCode"/> tells why. For example, 407 gives
@@ -134,6 +138,7 @@ public class HttpProxyClient(
         ArgumentNullException.ThrowIfNull(tcpClient);
         ArgumentException.ThrowIfNullOrWhiteSpace(host);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(port);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(port, IPEndPoint.MaxPort);
 
         logger?.LogDebug("Connecting to {Host}:{Port} through HTTP proxy {ProxyEndPoint}", host, port, options.ProxyEndPoint);
 
@@ -143,25 +148,9 @@ public class HttpProxyClient(
                 await tcpClient.ConnectAsync(options.ProxyEndPoint, cancellationToken).ConfigureAwait(false);
             }
 
-            Stream stream = tcpClient.GetStream();
-
-            if (options.UseTls) {
-                logger?.LogDebug("Establishing TLS connection to proxy");
-                var ssl = new SslStream(stream, leaveInnerStreamOpen: true, UserCertificateValidationCallback);
-                
-                var targetHost = options.ProxyHost ?? options.ProxyEndPoint.Address.ToString();
-                await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions {
-                    TargetHost = targetHost,
-                    EnabledSslProtocols = SslProtocols.None,
-                    CertificateRevocationCheckMode = X509RevocationMode.NoCheck
-                }, cancellationToken).ConfigureAwait(false);
-                
-                stream = ssl;
-                logger?.LogDebug("TLS connection established");
-            }
-
-            await SendConnectRequest(stream, host, port, cancellationToken).ConfigureAwait(false);
-            await ReadConnectResponse(stream, cancellationToken).ConfigureAwait(false);
+            var stream = options.UseTls
+                ? await OpenTunnelOverTlsAsync(tcpClient.GetStream(), host, port, cancellationToken).ConfigureAwait(false)
+                : await OpenTunnelAsync(tcpClient.GetStream(), host, port, cancellationToken).ConfigureAwait(false);
 
             _tunnelStreams.AddOrUpdate(tcpClient, stream);
             logger?.LogDebug("HTTP CONNECT tunnel established to {Host}:{Port}", host, port);
@@ -195,19 +184,56 @@ public class HttpProxyClient(
             tcpClient.NoDelay = true;
             await tcpClient.ConnectAsync(options.ProxyEndPoint, cancellationToken).ConfigureAwait(false);
 
+            // The check keeps no TLS session, so its stream is released here; the connection stays the caller's
             if (options.UseTls) {
-                var networkStream = tcpClient.GetStream();
-                var ssl = new SslStream(networkStream, leaveInnerStreamOpen: true, UserCertificateValidationCallback);
-                var targetHost = options.ProxyHost ?? options.ProxyEndPoint.Address.ToString();
-                await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions {
-                    TargetHost = targetHost,
-                    EnabledSslProtocols = SslProtocols.None,
-                    CertificateRevocationCheckMode = X509RevocationMode.NoCheck
-                }, cancellationToken).ConfigureAwait(false);
+                var sslStream = await AuthenticateTlsAsync(tcpClient.GetStream(), cancellationToken).ConfigureAwait(false);
+                await sslStream.DisposeAsync().ConfigureAwait(false);
             }
         }
         catch {
             tcpClient.Close();
+            throw;
+        }
+    }
+
+    // Asks the proxy for the tunnel on a stream to it, and returns that stream once the proxy has opened it
+    private async Task<Stream> OpenTunnelAsync(Stream stream, string host, int port, CancellationToken cancellationToken)
+    {
+        await SendConnectRequest(stream, host, port, cancellationToken).ConfigureAwait(false);
+        await ReadConnectResponse(stream, cancellationToken).ConfigureAwait(false);
+        return stream;
+    }
+
+    // The TLS stream becomes the caller's only with an open tunnel: a refused request must not leave it behind
+    private async Task<Stream> OpenTunnelOverTlsAsync(NetworkStream networkStream, string host, int port, CancellationToken cancellationToken)
+    {
+        var sslStream = await AuthenticateTlsAsync(networkStream, cancellationToken).ConfigureAwait(false);
+        try {
+            return await OpenTunnelAsync(sslStream, host, port, cancellationToken).ConfigureAwait(false);
+        }
+        catch {
+            await sslStream.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    // The TCP connection stays open when the TLS stream is disposed: closing it is the TcpClient's part
+    private async Task<SslStream> AuthenticateTlsAsync(NetworkStream networkStream, CancellationToken cancellationToken)
+    {
+        logger?.LogDebug("Establishing TLS connection to proxy");
+        var sslStream = new SslStream(networkStream, leaveInnerStreamOpen: true, UserCertificateValidationCallback);
+        try {
+            await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions {
+                TargetHost = options.ProxyHost ?? options.ProxyEndPoint.Address.ToString(),
+                EnabledSslProtocols = SslProtocols.None,
+                CertificateRevocationCheckMode = X509RevocationMode.NoCheck
+            }, cancellationToken).ConfigureAwait(false);
+
+            logger?.LogDebug("TLS connection established");
+            return sslStream;
+        }
+        catch {
+            await sslStream.DisposeAsync().ConfigureAwait(false);
             throw;
         }
     }

@@ -73,7 +73,10 @@ public abstract class TcpProxyServerBase(
     /// disposes <paramref name="client"/>, and it logs any exception the task throws.
     /// </remarks>
     /// <param name="client">The accepted connection.</param>
-    /// <param name="cancellationToken">The token that is canceled when the server stops.</param>
+    /// <param name="cancellationToken">
+    /// The token that is canceled when the server stops. An exception that a callback registered on it throws
+    /// is logged, and the stop goes on.
+    /// </param>
     /// <returns>A task that represents the asynchronous operation. It completes when the connection is done.</returns>
     protected abstract Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken);
 
@@ -122,7 +125,17 @@ public abstract class TcpProxyServerBase(
         if (serverCts is null) return false;
         _serverCts = null;
 
-        serverCts.Cancel();
+        // A handler's cancellation callback that throws must not keep the listener open: the server
+        // no longer counts as started, so no later call would close it.
+        try
+        {
+            serverCts.Cancel();
+        }
+        catch (AggregateException exception)
+        {
+            Logger.LogError(exception, "A connection's cancellation callback failed while {ServerType} stopped", GetType().Name);
+        }
+
         serverCts.Dispose();
         _listener.Stop();
         return true;

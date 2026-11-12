@@ -41,8 +41,8 @@ public class HttpProxyServerOptions
     public TimeSpan HandshakeTimeout { get; init; } = TimeSpan.FromSeconds(15);
 
     /// <summary>
-    /// Gets or sets how long the server waits for a destination to accept a TCP connection. The default is
-    /// 30 seconds.
+    /// Gets or sets how long the server may take to reach a destination: the lookup of its host name and the
+    /// TCP connect. The default is 30 seconds.
     /// </summary>
     /// <remarks>
     /// When it elapses, a CONNECT request gets 502 Bad Gateway and a plain HTTP request 504 Gateway Timeout.
@@ -54,13 +54,14 @@ public class HttpProxyServerOptions
     public TimeSpan HostConnectionTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// Gets how long, after one direction of a tunnel has ended (a TCP half-close) and the server has passed that
-    /// end on, the other direction may still carry data before the tunnel is closed. The default is 15 seconds.
+    /// Gets how long, after one direction of a tunnel has ended (a TCP half-close), the other direction may still
+    /// carry data before the tunnel is closed. The default is 15 seconds.
     /// </summary>
     /// <remarks>
-    /// It counts whole milliseconds, a fraction dropped: −1 ms (<see cref="Timeout.InfiniteTimeSpan"/>) waits for the
-    /// other direction without a limit; zero, or −2 ms or less, closes the tunnel without that wait, once the ended
-    /// direction's end has been passed on.
+    /// The time includes passing the end on to the other side, which an <see cref="HttpsProxyServer"/> does over
+    /// TLS, where it waits on a client that reads nothing. It counts whole milliseconds, a fraction dropped: −1 ms
+    /// (<see cref="Timeout.InfiniteTimeSpan"/>) waits without a limit; zero, or −2 ms or less, closes the tunnel
+    /// without a wait, right after it has started to pass the end on.
     /// </remarks>
     public TimeSpan TunnelHalfCloseTimeout { get; init; } = TimeSpan.FromSeconds(15);
 

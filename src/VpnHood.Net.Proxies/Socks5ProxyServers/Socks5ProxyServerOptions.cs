@@ -31,11 +31,11 @@ public class Socks5ProxyServerOptions
     public string? Password { get; init; }
 
     /// <summary>
-    /// Gets how long a client has to complete the method negotiation and the authentication. The default is
-    /// 15 seconds.
+    /// Gets how long a client has, from its connection's start, to complete the method negotiation and the
+    /// authentication and to send its request. The default is 15 seconds.
     /// </summary>
     /// <remarks>
-    /// The request that follows, and the server's lookup of a domain name in it, have no deadline of their own.
+    /// The server's lookup of a domain name in the request counts against <see cref="HostConnectionTimeout"/>.
     /// It counts whole milliseconds, a fraction dropped: −1 ms (<see cref="Timeout.InfiniteTimeSpan"/>) sets no limit;
     /// zero cancels the handshake as soon as the cancel runs, so it fails unless it has passed already; −2 ms or less
     /// fails every handshake at its start, and the server closes the connection.
@@ -43,8 +43,8 @@ public class Socks5ProxyServerOptions
     public TimeSpan HandshakeTimeout { get; init; } = TimeSpan.FromSeconds(15);
 
     /// <summary>
-    /// Gets or sets how long the server waits for a destination to accept a TCP connection. The default is
-    /// 30 seconds.
+    /// Gets or sets how long the server may take to reach a destination: the lookup of its domain name, when the
+    /// request gives one, and the TCP connect. The default is 30 seconds.
     /// </summary>
     /// <remarks>
     /// When it elapses, the client gets <see cref="Socks5Proxy.Socks5CommandReply.TtlExpired"/>. It is read at each

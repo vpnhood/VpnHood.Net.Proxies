@@ -12,10 +12,11 @@ namespace VpnHood.Net.Proxies.Socks5ProxyClients;
 /// password authentication (RFC 1929).
 /// </summary>
 /// <remarks>
-/// One instance can serve many connections at once; run one operation at a time on each connection, as the
-/// method negotiation and the authentication run once for each <see cref="TcpClient"/>. Keep the options
-/// unchanged while the client is in use. A host name is sent to the proxy as a domain name, so the proxy
-/// resolves it and no DNS query for it leaves this machine.
+/// One instance can serve many connections at once. The method negotiation and the authentication run once
+/// for each <see cref="TcpClient"/>, and the operations on one connection run one at a time: a call waits for
+/// the one before it, and a call that is canceled during that wait leaves the connection open. Keep the
+/// options unchanged while the client is in use. A host name is sent to the proxy as a domain name, so the
+/// proxy resolves it and no DNS query for it leaves this machine.
 /// </remarks>
 /// <example>
 /// <code snippet="Snippet:Socks5Connect" language="csharp">
@@ -40,7 +41,7 @@ public class Socks5ProxyClient(
 {
     // The SOCKS5 method negotiation belongs to a connection, not to this client instance,
     // so track it per TcpClient. Entries disappear with their TcpClient.
-    private readonly ConditionalWeakTable<TcpClient, object> _authenticatedConnections = new();
+    private readonly ConditionalWeakTable<TcpClient, ConnectionState> _connections = new();
 
     /// <inheritdoc/>
     public IPEndPoint ProxyEndPoint => options.ProxyEndPoint;
@@ -64,10 +65,7 @@ public class Socks5ProxyClient(
     /// <paramref name="host"/> is empty or white space, or its UTF-8 form exceeds 255 bytes; or a credential in
     /// the options exceeds 255 bytes.
     /// </exception>
-    /// <exception cref="ArgumentOutOfRangeException">
-    /// <paramref name="port"/> is zero or negative, or above 65535 when <paramref name="host"/> is an IP address
-    /// literal.
-    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="port"/> is less than 1 or greater than 65535.</exception>
     /// <exception cref="ProxyClientException">
     /// The proxy refused the request; <see cref="SocketException.SocketErrorCode"/> tells why.
     /// </exception>
@@ -86,6 +84,7 @@ public class Socks5ProxyClient(
         ArgumentNullException.ThrowIfNull(tcpClient);
         ArgumentException.ThrowIfNullOrWhiteSpace(host);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(port);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(port, IPEndPoint.MaxPort); // the request has two bytes for it
 
         // IP literals are sent as-is; host names are sent as SOCKS5 domain addresses so the
         // proxy resolves them remotely (no local DNS lookup or leak)
@@ -96,8 +95,9 @@ public class Socks5ProxyClient(
 
         logger?.LogDebug("Connecting to {Host}:{Port} through SOCKS5 proxy {ProxyEndPoint}", host, port, ProxyEndPoint);
 
+        var connection = await EnterConnectionAsync(tcpClient, cancellationToken).ConfigureAwait(false);
         try {
-            var stream = await GetAuthenticatedStreamAsync(tcpClient, cancellationToken).ConfigureAwait(false);
+            var stream = await GetAuthenticatedStreamAsync(tcpClient, connection, cancellationToken).ConfigureAwait(false);
             var result = await SendCommandAndReadReplyAsync(stream, Socks5Command.Connect, host, null, port, cancellationToken).ConfigureAwait(false);
             if (result.Reply != Socks5CommandReply.Succeeded)
                 throw MapSocksErrorToException(result.Reply);
@@ -110,6 +110,9 @@ public class Socks5ProxyClient(
             tcpClient.Close();
             throw;
         }
+        finally {
+            connection.Lock.Release();
+        }
     }
 
     /// <summary>
@@ -119,8 +122,9 @@ public class Socks5ProxyClient(
     /// <param name="tcpClient">
     /// The connection to check. When it is not connected, it is connected to <see cref="ProxyEndPoint"/> first.
     /// After the check it stays open and authenticated, so a later <see cref="ConnectAsync(TcpClient, string, int, CancellationToken)"/>
-    /// or <see cref="CreateUdpAssociateAsync(TcpClient, CancellationToken)"/> on it skips the negotiation. When
-    /// the check fails, it is closed.
+    /// or <see cref="CreateUdpAssociateAsync(TcpClient, CancellationToken)"/> on it skips the negotiation. Send
+    /// that request soon: a proxy closes a connection that asks for nothing, as the server of this library does
+    /// when its handshake timeout ends. When the check fails, it is closed.
     /// </param>
     /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
     /// <returns>A task that represents the asynchronous operation. It completes when the check passes.</returns>
@@ -138,12 +142,16 @@ public class Socks5ProxyClient(
     {
         ArgumentNullException.ThrowIfNull(tcpClient);
 
+        var connection = await EnterConnectionAsync(tcpClient, cancellationToken).ConfigureAwait(false);
         try {
-            await GetAuthenticatedStreamAsync(tcpClient, cancellationToken).ConfigureAwait(false);
+            await GetAuthenticatedStreamAsync(tcpClient, connection, cancellationToken).ConfigureAwait(false);
         }
         catch {
             tcpClient.Close();
             throw;
+        }
+        finally {
+            connection.Lock.Release();
         }
     }
 
@@ -181,8 +189,9 @@ public class Socks5ProxyClient(
 
         logger?.LogDebug("Connecting to {Destination} through SOCKS5 proxy {ProxyEndPoint}", destination, ProxyEndPoint);
 
+        var connection = await EnterConnectionAsync(tcpClient, cancellationToken).ConfigureAwait(false);
         try {
-            var stream = await GetAuthenticatedStreamAsync(tcpClient, cancellationToken).ConfigureAwait(false);
+            var stream = await GetAuthenticatedStreamAsync(tcpClient, connection, cancellationToken).ConfigureAwait(false);
             var result = await SendCommandAndReadReplyAsync(stream, Socks5Command.Connect, null, destination.Address, destination.Port, cancellationToken).ConfigureAwait(false);
             if (result.Reply != Socks5CommandReply.Succeeded)
                 throw MapSocksErrorToException(result.Reply);
@@ -194,6 +203,9 @@ public class Socks5ProxyClient(
             logger?.LogError(ex, "Failed to connect to {Destination} through SOCKS5 proxy", destination);
             tcpClient.Close();
             throw;
+        }
+        finally {
+            connection.Lock.Release();
         }
     }
 
@@ -207,9 +219,8 @@ public class Socks5ProxyClient(
     /// </remarks>
     /// <param name="tcpClient">
     /// The control connection. When it is not connected, it is connected to <see cref="ProxyEndPoint"/> and
-    /// authenticated first. The association lasts as long as it stays open: keep it open, and send nothing
-    /// more on it, while datagrams flow; close it to end the association. The server of this library also
-    /// ends it when anything arrives on it. When the exchange with the proxy fails, it is closed.
+    /// authenticated first. The association lasts as long as it stays open: keep it open while datagrams flow,
+    /// and close it to end the association. When the exchange with the proxy fails, it is closed.
     /// </param>
     /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
     /// <returns>
@@ -248,7 +259,7 @@ public class Socks5ProxyClient(
     /// using var udp = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
     /// var localUdpEndPoint = (IPEndPoint)udp.Client.LocalEndPoint!;
     ///
-    /// // the association lasts while this TCP control connection stays open, with nothing more sent on it
+    /// // the association lasts while this TCP control connection stays open
     /// using var controlTcp = new TcpClient();
     /// var relayEndPoint = await client.CreateUdpAssociateAsync(controlTcp, localUdpEndPoint, CancellationToken.None);
     ///
@@ -264,9 +275,8 @@ public class Socks5ProxyClient(
     /// </example>
     /// <param name="tcpClient">
     /// The control connection. When it is not connected, it is connected to <see cref="ProxyEndPoint"/> and
-    /// authenticated first. The association lasts as long as it stays open: keep it open, and send nothing
-    /// more on it, while datagrams flow; close it to end the association. The server of this library also
-    /// ends it when anything arrives on it. When the exchange with the proxy fails, it is closed.
+    /// authenticated first. The association lasts as long as it stays open: keep it open while datagrams flow,
+    /// and close it to end the association. When the exchange with the proxy fails, it is closed.
     /// </param>
     /// <param name="clientUdpEndPoint">
     /// The address and port the client will send datagrams from, as the proxy sees them, or
@@ -302,8 +312,9 @@ public class Socks5ProxyClient(
 
         logger?.LogDebug("Creating UDP associate through SOCKS5 proxy");
 
+        var connection = await EnterConnectionAsync(tcpClient, cancellationToken).ConfigureAwait(false);
         try {
-            var stream = await GetAuthenticatedStreamAsync(tcpClient, cancellationToken).ConfigureAwait(false);
+            var stream = await GetAuthenticatedStreamAsync(tcpClient, connection, cancellationToken).ConfigureAwait(false);
 
             var endpointToSend = clientUdpEndPoint ?? new IPEndPoint(IPAddress.Any, 0);
             var result = await SendCommandAndReadReplyAsync(stream, Socks5Command.UdpAssociate, null, endpointToSend.Address, endpointToSend.Port, cancellationToken).ConfigureAwait(false);
@@ -332,9 +343,22 @@ public class Socks5ProxyClient(
             tcpClient.Close();
             throw;
         }
+        finally {
+            connection.Lock.Release();
+        }
     }
 
-    private async Task<NetworkStream> GetAuthenticatedStreamAsync(TcpClient tcpClient, CancellationToken cancellationToken)
+    // One exchange at a time on a connection: a second one would mix its bytes into the first's. The caller
+    // releases the lock. A wait that is canceled leaves the connection alone: the operation ahead still uses it.
+    private async Task<ConnectionState> EnterConnectionAsync(TcpClient tcpClient, CancellationToken cancellationToken)
+    {
+        var connection = _connections.GetValue(tcpClient, static _ => new ConnectionState());
+        await connection.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        return connection;
+    }
+
+    private async Task<NetworkStream> GetAuthenticatedStreamAsync(TcpClient tcpClient, ConnectionState connection,
+        CancellationToken cancellationToken)
     {
         if (!tcpClient.Connected) {
             tcpClient.NoDelay = true;
@@ -342,9 +366,9 @@ public class Socks5ProxyClient(
         }
 
         var stream = tcpClient.GetStream();
-        if (!_authenticatedConnections.TryGetValue(tcpClient, out _)) {
+        if (!connection.IsAuthenticated) {
             await PerformAuthenticationAsync(stream, cancellationToken).ConfigureAwait(false);
-            _authenticatedConnections.AddOrUpdate(tcpClient, new object());
+            connection.IsAuthenticated = true;
         }
 
         return stream;
@@ -600,14 +624,16 @@ public class Socks5ProxyClient(
     /// When this method returns, the datagram's payload: a slice of <paramref name="datagram"/>, not a copy.
     /// </param>
     /// <returns>The address and port the payload came from.</returns>
-    /// <exception cref="ArgumentException"><paramref name="datagram"/> is shorter than 7 bytes.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="datagram"/> is shorter than 7 bytes, or it ends before its header does: inside the address or
+    /// the port that follows it.
+    /// </exception>
     /// <exception cref="NotSupportedException">
     /// The datagram is a fragment, its reserved bytes are not zero, or its address type is unknown.
     /// </exception>
-    /// <exception cref="ArgumentOutOfRangeException">The datagram ends inside its address.</exception>
-    /// <exception cref="IndexOutOfRangeException">The datagram ends inside its port.</exception>
     public static Socks5Endpoint ParseUdpResponse(ReadOnlySpan<byte> datagram, out ReadOnlySpan<byte> payload)
     {
+        // 7 bytes: the shortest header, which carries an empty domain name
         if (datagram.Length < 7)
             throw new ArgumentException("Datagram too short for SOCKS5 UDP response", nameof(datagram));
 
@@ -615,37 +641,29 @@ public class Socks5ProxyClient(
             throw new NotSupportedException("Fragmented or malformed SOCKS5 UDP packet");
 
         var addressType = (Socks5AddressType)datagram[3];
-        var offset = 4;
+        var addressLength = addressType switch {
+            Socks5AddressType.IpV4 => 4,
+            Socks5AddressType.IpV6 => 16,
+            Socks5AddressType.DomainName => 1 + datagram[4], // a length byte, then the name
+            _ => throw new NotSupportedException($"Unsupported address type in UDP response: {addressType}")
+        };
 
-        string? host = null;
-        IPAddress? address = null;
+        var payloadOffset = 4 + addressLength + 2;
+        if (datagram.Length < payloadOffset)
+            throw new ArgumentException("Datagram ends inside its SOCKS5 UDP header", nameof(datagram));
 
-        switch (addressType)
-        {
-            case Socks5AddressType.IpV4:
-                address = new IPAddress(datagram.Slice(offset, 4));
-                offset += 4;
-                break;
+        var addressBytes = datagram.Slice(4, addressLength);
+        var port = datagram[payloadOffset - 2] << 8 | datagram[payloadOffset - 1];
+        payload = datagram[payloadOffset..];
 
-            case Socks5AddressType.IpV6:
-                address = new IPAddress(datagram.Slice(offset, 16));
-                offset += 16;
-                break;
+        return addressType == Socks5AddressType.DomainName
+            ? new Socks5Endpoint(Encoding.UTF8.GetString(addressBytes[1..]), null, port)
+            : new Socks5Endpoint(null, new IPAddress(addressBytes), port);
+    }
 
-            case Socks5AddressType.DomainName:
-                var domainLength = datagram[offset++];
-                host = Encoding.UTF8.GetString(datagram.Slice(offset, domainLength));
-                offset += domainLength;
-                break;
-
-            default:
-                throw new NotSupportedException($"Unsupported address type in UDP response: {addressType}");
-        }
-
-        var port = datagram[offset] << 8 | datagram[offset + 1];
-        offset += 2;
-
-        payload = datagram[offset..];
-        return new Socks5Endpoint(host, address, port);
+    private sealed class ConnectionState
+    {
+        public SemaphoreSlim Lock { get; } = new(1, 1);
+        public bool IsAuthenticated { get; set; }
     }
 }

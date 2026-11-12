@@ -29,7 +29,7 @@
 	</PropertyGroup>
 
 	<PropertyGroup Condition="'$(Configuration)'=='Release'">
-		<PathMap>$(SolutionDir)=.</PathMap>
+		<PathMap>$(MSBuildThisFileDirectory)=.</PathMap>
 	</PropertyGroup>
 
 	<!-- Reproducible builds when built by CI (build, test, and publish all run in Actions). -->

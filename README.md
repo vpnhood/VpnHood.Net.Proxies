@@ -15,7 +15,7 @@ This is an **independent, general-purpose library**: it implements the standard 
 
 Common properties:
 
-* Standalone and reusable — plain .NET, no VPN or VpnHood runtime required; the only dependency is `Microsoft.Extensions.Logging.Abstractions`
+* Standalone and reusable — plain .NET, no VPN or VpnHood runtime required, and no package dependencies
 * Fully asynchronous, cancellation-aware I/O; no blocking calls
 * Handshake and connect timeouts with sensible defaults ([options classes](https://github.com/vpnhood/VpnHood.Net.Proxies/blob/main/src/VpnHood.Net.Proxies/Socks5ProxyServers/Socks5ProxyServerOptions.cs))
 * Built for memory-constrained hosts (mobile network extensions, small containers): every per-connection resource is bounded — an optional `MaxConnections` cap (unlimited by default), capped header sizes, bounded UDP destination tables, and a TCP half-close linger timeout so idle peers cannot retain tunnels indefinitely
@@ -78,7 +78,7 @@ var client = new Socks5ProxyClient(new Socks5ProxyClientOptions {
 using var udp = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
 var localUdpEndPoint = (IPEndPoint)udp.Client.LocalEndPoint!;
 
-// the association lasts while this TCP control connection stays open, with nothing more sent on it
+// the association lasts while this TCP control connection stays open
 using var controlTcp = new TcpClient();
 var relayEndPoint = await client.CreateUdpAssociateAsync(controlTcp, localUdpEndPoint, CancellationToken.None);
 
@@ -105,7 +105,7 @@ server.Start();
 var proxyEndPoint = server.ListenerEndPoint;
 ```
 
-Handles `CONNECT` tunnels (HTTPS traffic, IPv6 authorities like `[::1]:443` included) and forwards plain absolute-URI requests (`GET http://… HTTP/1.1`) with the client's headers preserved.
+Handles `CONNECT` tunnels (HTTPS traffic, IPv6 authorities like `[::1]:443` included) and forwards plain absolute-URI requests (`GET http://… HTTP/1.1`) with the client's headers preserved, repeated ones included. A request for an `https://` URI gets `501 Not Implemented`: HTTPS goes through `CONNECT`.
 
 ### Run an HTTPS proxy server (TLS between client and proxy)
 

@@ -10,8 +10,9 @@ namespace VpnHood.Net.Proxies.HttpProxyServers;
 /// past the final CRLF (a request body start or pipelined tunnel data) is handed back via
 /// <see cref="DetachRemainder"/> so the tunnel phase can forward it.
 ///
-/// Hard limits: 8 KB per line, 100 header names, 32 KB total — a hostile client must not be able to
-/// make one pending handshake allocate megabytes (many concurrent handshakes are cheap to open).
+/// Hard limits: 8 KB per line, 100 header lines, 32 KB for the request line and the headers together — a
+/// hostile client must not be able to make one pending handshake allocate megabytes (many concurrent
+/// handshakes are cheap to open).
 /// </summary>
 internal sealed class HttpHandshakeReader(Stream stream) : IDisposable
 {
@@ -23,7 +24,7 @@ internal sealed class HttpHandshakeReader(Stream stream) : IDisposable
     private byte[]? _buffer = ArrayPool<byte>.Shared.Rent(MaxLineLength + 1024);
     private int _start; // first unconsumed byte
     private int _end;   // one past the last valid byte
-    private int _totalReadBytes;
+    private int _lineBytes; // bytes of the lines handed out, their line ends included
 
     /// <summary>Returns the next line without CR/LF, or null on EOF before any byte was read.</summary>
     public async Task<string?> ReadLineAsync(CancellationToken cancellationToken)
@@ -44,6 +45,13 @@ internal sealed class HttpHandshakeReader(Stream stream) : IDisposable
                 if (lineSpan.Length > MaxLineLength)
                     throw new ProtocolViolationException("HTTP header line too long");
 
+                // The total counts the lines handed out, not the bytes read: a read also brings in what
+                // follows the headers (a body's start, tunnel data), which the buffer's size bounds already
+                // and which is no part of them.
+                _lineBytes += newlineIndex + 1 - _start;
+                if (_lineBytes > MaxTotalHeaderBytes)
+                    throw new ProtocolViolationException("HTTP headers too large");
+
                 // Latin-1: a 1:1 byte-to-char mapping, so malformed non-ASCII bytes cannot
                 // corrupt the parse the way a multibyte decoder could
                 var line = Encoding.Latin1.GetString(lineSpan);
@@ -51,8 +59,12 @@ internal sealed class HttpHandshakeReader(Stream stream) : IDisposable
                 return line;
             }
 
+            // A CR at the end may be the line end's first half, with its LF in the next read: it counts
+            // as content only once a byte other than LF follows it. Otherwise a line of exactly the
+            // maximum length would pass or fail by where a read happened to end.
             scanned = _end - _start;
-            if (scanned > MaxLineLength)
+            var contentLength = scanned > 0 && buffer[_end - 1] == (byte)'\r' ? scanned - 1 : scanned;
+            if (contentLength > MaxLineLength)
                 throw new ProtocolViolationException("HTTP header line too long");
 
             // no line end in the buffer yet: compact the window to the front and refill
@@ -76,15 +88,12 @@ internal sealed class HttpHandshakeReader(Stream stream) : IDisposable
             }
 
             _end += read;
-            _totalReadBytes += read;
-            if (_totalReadBytes > MaxTotalHeaderBytes)
-                throw new ProtocolViolationException("HTTP headers too large");
         }
     }
 
-    public async Task<Dictionary<string, string>> ReadHeadersAsync(CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<HttpHeader>> ReadHeadersAsync(CancellationToken cancellationToken)
     {
-        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var headers = new List<HttpHeader>();
         string? line;
         while (!string.IsNullOrEmpty(line = await ReadLineAsync(cancellationToken).ConfigureAwait(false)))
         {
@@ -93,11 +102,7 @@ internal sealed class HttpHandshakeReader(Stream stream) : IDisposable
 
             var colonIndex = line.IndexOf(':');
             if (colonIndex > 0)
-            {
-                var name = line[..colonIndex].Trim();
-                var value = line[(colonIndex + 1)..].Trim();
-                headers[name] = value;
-            }
+                headers.Add(new HttpHeader(line[..colonIndex].Trim(), line[(colonIndex + 1)..].Trim()));
         }
 
         return headers;

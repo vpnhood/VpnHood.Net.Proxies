@@ -37,7 +37,7 @@ public interface IProxyClient
     /// in UTF-8.
     /// </exception>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// <paramref name="port"/> is zero or negative, or, for SOCKS5 with an IP address literal, above 65535.
+    /// <paramref name="port"/> is less than 1 or greater than 65535.
     /// </exception>
     /// <exception cref="ProxyClientException">
     /// The proxy refused the request or answered in a way the client cannot use, or, for SOCKS4, the destination is an
@@ -71,7 +71,7 @@ public interface IProxyClient
     /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
     /// <returns>A task that represents the asynchronous operation. It completes when the tunnel is open.</returns>
     /// <exception cref="ArgumentNullException">
-    /// <paramref name="tcpClient"/> is <see langword="null"/>, or, for SOCKS, <paramref name="destination"/> is.
+    /// <paramref name="tcpClient"/> or <paramref name="destination"/> is <see langword="null"/>.
     /// </exception>
     /// <exception cref="ArgumentException">For SOCKS5, a credential in the options exceeds 255 bytes in UTF-8.</exception>
     /// <exception cref="ArgumentOutOfRangeException">For HTTP and SOCKS4, the destination's port is zero.</exception>
@@ -108,9 +108,7 @@ public interface IProxyClient
     /// <param name="tcpClient">A connection that is not connected yet. When the check fails, it is closed.</param>
     /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
     /// <returns>A task that represents the asynchronous operation. It completes when the check passes.</returns>
-    /// <exception cref="ArgumentNullException">
-    /// For HTTP and SOCKS5, <paramref name="tcpClient"/> is <see langword="null"/>.
-    /// </exception>
+    /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">For SOCKS5, a credential in the options exceeds 255 bytes in UTF-8.</exception>
     /// <exception cref="System.Security.Authentication.AuthenticationException">
     /// The TLS handshake with an HTTPS proxy failed.

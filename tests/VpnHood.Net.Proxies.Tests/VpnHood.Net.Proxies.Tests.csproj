@@ -1,14 +1,13 @@
-<Project Sdk="MSTest.Sdk/3.10.4">
+<Project Sdk="MSTest.Sdk/4.5.3">
 	<PropertyGroup>
 		<UseVSTest>true</UseVSTest>
 		<IsPackable>false</IsPackable>
+		<!-- MSTest.Sdk brings the test packages itself: a property, not a PackageReference, overrides the version
+		     of the VSTest platform it bundles. -->
+		<MicrosoftNETTestSdkVersion>18.12.0</MicrosoftNETTestSdkVersion>
 	</PropertyGroup>
 
 	<ItemGroup>
 		<ProjectReference Include="..\..\src\VpnHood.Net.Proxies\VpnHood.Net.Proxies.csproj" />
-	</ItemGroup>
-
-	<ItemGroup>
-		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
 	</ItemGroup>
 </Project>

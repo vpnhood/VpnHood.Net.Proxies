@@ -13,11 +13,14 @@ internal sealed class HttpOriginServer : IDisposable
     private readonly TcpListener _listener;
     private readonly CancellationTokenSource _cts = new();
     private readonly TaskCompletionSource _requestReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _connectionCount;
 
     public IPEndPoint EndPoint { get; }
     public string ReceivedHeaders { get; private set; } = string.Empty;
+    public byte[] ReceivedHeaderBytes { get; private set; } = [];
     public byte[] ReceivedBody { get; private set; } = [];
     public Task RequestReceived => _requestReceived.Task;
+    public int ConnectionCount => Volatile.Read(ref _connectionCount);
 
     public HttpOriginServer(IPAddress address)
     {
@@ -32,6 +35,7 @@ internal sealed class HttpOriginServer : IDisposable
         try {
             while (!_cts.IsCancellationRequested) {
                 var client = await _listener.AcceptTcpClientAsync(_cts.Token);
+                Interlocked.Increment(ref _connectionCount);
                 _ = Task.Run(() => HandleClientAsync(client));
             }
         }
@@ -59,7 +63,8 @@ internal sealed class HttpOriginServer : IDisposable
                     break;
             }
 
-            ReceivedHeaders = Encoding.ASCII.GetString(headerBytes.ToArray());
+            ReceivedHeaderBytes = headerBytes.ToArray();
+            ReceivedHeaders = Encoding.ASCII.GetString(ReceivedHeaderBytes);
 
             // read the body if Content-Length is present
             var contentLength = 0;

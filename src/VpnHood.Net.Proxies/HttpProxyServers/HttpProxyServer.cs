@@ -9,12 +9,13 @@ namespace VpnHood.Net.Proxies.HttpProxyServers;
 /// Basic authentication.
 /// </summary>
 /// <remarks>
-/// A request with an absolute URI, such as <c>GET http://example.com/ HTTP/1.1</c>, goes to its origin with the
-/// client's headers, minus the hop-by-hop ones (RFC 9110, section 7.6.1), and with <c>Connection: close</c>, so
-/// each such request takes a client connection of its own. A request with an invalid URI gets 400 Bad Request,
-/// and one whose origin cannot be reached gets 502 Bad Gateway, or 504 Gateway Timeout when the connection
-/// attempt runs out of time. A request rejected while it is parsed may get 400 Bad Request or be closed without
-/// an answer.
+/// A request with an absolute <c>http:</c> URI, such as <c>GET http://example.com/ HTTP/1.1</c>, goes to its
+/// origin with the client's header lines as they came, minus the hop-by-hop ones (RFC 9110, section 7.6.1), and
+/// with <c>Connection: close</c>, so each such request takes a client connection of its own. A request whose URI
+/// is not absolute gets 400 Bad Request; one with another scheme, such as <c>https:</c>, gets 501 Not
+/// Implemented, as HTTPS goes through CONNECT; and one whose origin cannot be reached gets 502 Bad Gateway, or
+/// 504 Gateway Timeout when the connection attempt runs out of time. A request rejected while it is parsed may
+/// get 400 Bad Request or be closed without an answer.
 /// </remarks>
 /// <example>
 /// <code snippet="Snippet:HttpServer" language="csharp">
@@ -89,21 +90,52 @@ public sealed class HttpProxyServer(
         }
     }
 
+    // RFC 9110 §7.6.1: besides the fixed hop-by-hop set, every header named in an incoming Connection
+    // line is also connection-specific and must be stripped (e.g. "Connection: Foo" makes "Foo"
+    // hop-by-hop for this request). A request may carry several Connection lines.
+    private static HashSet<string> GetExcludedHeaders(IReadOnlyList<HttpHeader> headers)
+    {
+        var connectionValues = headers
+            .Where(header => header.Name.Equals("Connection", StringComparison.OrdinalIgnoreCase))
+            .Select(header => header.Value)
+            .ToArray();
+
+        if (connectionValues.Length == 0)
+            return HopByHopHeaders;
+
+        var excludedHeaders = new HashSet<string>(HopByHopHeaders, StringComparer.OrdinalIgnoreCase);
+        foreach (var connectionValue in connectionValues)
+        {
+            foreach (var name in connectionValue.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+                excludedHeaders.Add(name);
+        }
+
+        return excludedHeaders;
+    }
+
     private async Task HandleHttpRequestAsync(HttpHandshakeResult handshake, Stream clientStream, CancellationToken cancellationToken, string clientEndpointAddress)
     {
         var headers = handshake.Headers;
         var responseStarted = false;
         try
         {
-            if (!Uri.TryCreate(handshake.Target, UriKind.Absolute, out var targetUri))
+            // On Unix, Uri takes a path such as "/index.html" for an absolute file URI: it is no proxy request
+            if (handshake.Target.StartsWith('/') || !Uri.TryCreate(handshake.Target, UriKind.Absolute, out var targetUri))
             {
                 Logger.LogWarning("Invalid URI {Uri} from {ClientEndpoint}", handshake.Target, clientEndpointAddress);
                 await HttpProxyHandler.WriteErrorResponseAsync(clientStream, "400 Bad Request", cancellationToken).ConfigureAwait(false);
                 return;
             }
 
-            var hostname = targetUri.Host;
-            var port = targetUri.IsDefaultPort ? targetUri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) ? 443 : 80 : targetUri.Port;
+            // Only plain HTTP is forwarded. An https: request sent on in the clear would not reach its origin's
+            // TLS port as anything it understands, and would expose what the client meant to protect: HTTPS
+            // goes through CONNECT.
+            if (targetUri.Scheme != Uri.UriSchemeHttp)
+            {
+                Logger.LogWarning("Unsupported URI scheme {Scheme} from {ClientEndpoint}", targetUri.Scheme, clientEndpointAddress);
+                await HttpProxyHandler.WriteErrorResponseAsync(clientStream, "501 Not Implemented", cancellationToken).ConfigureAwait(false);
+                return;
+            }
 
             using var remoteClient = new TcpClient();
             remoteClient.NoDelay = true;
@@ -111,43 +143,31 @@ public sealed class HttpProxyServer(
             using (var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
                 connectionCts.CancelAfter(options.HostConnectionTimeout);
-                await remoteClient.ConnectAsync(hostname, port, connectionCts.Token).ConfigureAwait(false);
+                await remoteClient.ConnectAsync(targetUri.Host, targetUri.Port, connectionCts.Token).ConfigureAwait(false);
             }
 
             var remoteStream = remoteClient.GetStream();
 
-            // RFC 9110 §7.6.1: besides the fixed hop-by-hop set, every header named in the
-            // incoming Connection value is also connection-specific and must be stripped
-            // (e.g. "Connection: Foo" makes "Foo" hop-by-hop for this request)
-            var excludedHeaders = HopByHopHeaders;
-            if (headers.TryGetValue("Connection", out var connectionValue))
-            {
-                excludedHeaders = new HashSet<string>(HopByHopHeaders, StringComparer.OrdinalIgnoreCase);
-                foreach (var token in connectionValue.Split(','))
-                {
-                    var name = token.Trim();
-                    if (name.Length > 0)
-                        excludedHeaders.Add(name);
-                }
-            }
-
-            // Rebuild the request line with the origin-form target and forward the client's headers
+            // Rebuild the request line with the origin-form target and forward the client's header lines,
+            // each of them: a name may come more than once, and the lines' order belongs to the request
+            var excludedHeaders = GetExcludedHeaders(headers);
             var requestBuilder = new StringBuilder();
             requestBuilder.Append(handshake.Method).Append(' ').Append(targetUri.PathAndQuery).Append(" HTTP/1.1\r\n");
 
-            if (!headers.ContainsKey("Host"))
+            if (!headers.Any(header => header.Name.Equals("Host", StringComparison.OrdinalIgnoreCase)))
                 requestBuilder.Append("Host: ").Append(targetUri.Authority).Append("\r\n");
 
             foreach (var header in headers)
             {
-                if (excludedHeaders.Contains(header.Key))
+                if (excludedHeaders.Contains(header.Name))
                     continue;
-                requestBuilder.Append(header.Key).Append(": ").Append(header.Value).Append("\r\n");
+                requestBuilder.Append(header.Name).Append(": ").Append(header.Value).Append("\r\n");
             }
 
             requestBuilder.Append("Connection: close\r\n\r\n");
 
-            var requestBytes = Encoding.UTF8.GetBytes(requestBuilder.ToString());
+            // Latin-1 gives each char back as the byte it was read from, so a header's bytes leave as they came
+            var requestBytes = Encoding.Latin1.GetBytes(requestBuilder.ToString());
             await remoteStream.WriteAsync(requestBytes, cancellationToken).ConfigureAwait(false);
             await remoteStream.FlushAsync(cancellationToken).ConfigureAwait(false);
 

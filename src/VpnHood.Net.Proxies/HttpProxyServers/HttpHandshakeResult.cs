@@ -4,7 +4,7 @@ internal readonly struct HttpHandshakeResult
 {
     public string Method { get; init; }
     public string Target { get; init; }
-    public Dictionary<string, string> Headers { get; init; }
+    public IReadOnlyList<HttpHeader> Headers { get; init; }
 
     /// <summary>
     /// Bytes received after the header block (start of a request body or pipelined tunnel
@@ -17,7 +17,7 @@ internal readonly struct HttpHandshakeResult
 
     public static HttpHandshakeResult Invalid => new() { IsValid = false, Remainder = [] };
 
-    public static HttpHandshakeResult Valid(string method, string target, Dictionary<string, string> headers, byte[] remainder)
+    public static HttpHandshakeResult Valid(string method, string target, IReadOnlyList<HttpHeader> headers, byte[] remainder)
     {
         return new HttpHandshakeResult
         {

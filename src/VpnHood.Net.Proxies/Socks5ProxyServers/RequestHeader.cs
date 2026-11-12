@@ -5,5 +5,7 @@ namespace VpnHood.Net.Proxies.Socks5ProxyServers;
 internal sealed class RequestHeader
 {
     public required Socks5Command Command { get; init; }
-    public required Socks5AddressType AddressType { get; init; }
+
+    // As the client gave it: a domain name is not looked up yet
+    public required Socks5Endpoint Destination { get; init; }
 }

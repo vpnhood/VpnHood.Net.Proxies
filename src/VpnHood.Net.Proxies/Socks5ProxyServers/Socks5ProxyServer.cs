@@ -13,18 +13,21 @@ namespace VpnHood.Net.Proxies.Socks5ProxyServers;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The server resolves a domain name in a request itself, and prefers an IPv4 address. It answers BIND, and
-/// any other command, with <see cref="Socks5CommandReply.CommandNotSupported"/>.
+/// The server resolves a domain name in a request itself, and prefers an IPv4 address; a name it cannot look
+/// up gets <see cref="Socks5CommandReply.HostUnreachable"/>. It answers BIND, and any other command, with
+/// <see cref="Socks5CommandReply.CommandNotSupported"/>, and an address type it does not know with
+/// <see cref="Socks5CommandReply.AddressTypeNotSupported"/>.
 /// </para>
 /// <para>
 /// A UDP association relays datagrams between the client and the destinations it sends to, until the
-/// request's TCP connection closes or anything more arrives on it. The client's datagrams are taken from the
-/// UDP endpoint it declared, where an unspecified address stands for its TCP connection's; when it declared
-/// none (port zero), the first datagram from its address claims the association. Replies are taken from the
-/// destinations the client has sent to. Datagrams from any other sender, and fragmented ones, are dropped. The
-/// relay socket takes the address family of the TCP connection, so an association made over IPv4 reaches only
-/// IPv4 destinations. An association remembers up to 2048 destinations; past that, it forgets those silent
-/// for 60 seconds, then the least recently active, and drops what a forgotten destination sends.
+/// request's TCP connection closes; what arrives on that connection meanwhile is discarded. The client's
+/// datagrams are taken from the UDP endpoint it declared, where an unspecified address stands for its TCP
+/// connection's; when it declared none (port zero), the first datagram from its address claims the
+/// association. Replies are taken from the destinations the client has sent to. Datagrams from any other
+/// sender, and fragmented ones, are dropped. The relay socket takes the address family of the TCP connection,
+/// so an association made over IPv4 reaches only IPv4 destinations. An association remembers up to 2048
+/// destinations; past that, it forgets those silent for 60 seconds, then the least recently active, and drops
+/// what a forgotten destination sends.
 /// </para>
 /// </remarks>
 /// <example>
@@ -74,26 +77,26 @@ public sealed class Socks5ProxyServer(
             if (!handshakeResult.IsValid)
                 return;
 
-            Logger.LogDebug("Processing {Command} command from {ClientEndpoint}", handshakeResult.RequestHeader.Command, clientEndpoint);
+            var request = handshakeResult.RequestHeader;
+            Logger.LogDebug("Processing {Command} command from {ClientEndpoint}", request.Command, clientEndpoint);
 
             // Handle request based on command
-            switch (handshakeResult.RequestHeader.Command)
+            switch (request.Command)
             {
                 case Socks5Command.Connect:
                     {
-                        var destination = await ReadDestinationAsync(networkStream, handshakeResult.RequestHeader.AddressType, cancellationToken).ConfigureAwait(false);
-                        await HandleConnectCommandAsync(networkStream, destination.Address, destination.Port, cancellationToken, clientEndpoint).ConfigureAwait(false);
+                        await HandleConnectCommandAsync(networkStream, request.Destination, clientEndpoint, cancellationToken).ConfigureAwait(false);
                         break;
                     }
                 case Socks5Command.UdpAssociate:
                     {
                         await HandleUdpAssociateCommandAsync(networkStream, client,
-                            handshakeResult.RequestHeader.AddressType, clientEndpoint, cancellationToken).ConfigureAwait(false);
+                            request.Destination, clientEndpoint, cancellationToken).ConfigureAwait(false);
                         break;
                     }
                 default:
                     {
-                        Logger.LogWarning("Unsupported command {Command} from {ClientEndpoint}", handshakeResult.RequestHeader.Command, clientEndpoint);
+                        Logger.LogWarning("Unsupported command {Command} from {ClientEndpoint}", request.Command, clientEndpoint);
                         await SendReplyAsync(networkStream, Socks5CommandReply.CommandNotSupported, IPAddress.Any, 0, cancellationToken).ConfigureAwait(false);
                         break;
                     }
@@ -129,9 +132,16 @@ public sealed class Socks5ProxyServer(
                     return Socks5HandshakeResult.Invalid;
             }
 
-            // Read request header
-            // ReSharper disable once PossiblyMistakenUseOfCancellationToken
-            var requestHeader = await ReadRequestHeaderAsync(networkStream, cancellationToken).ConfigureAwait(false);
+            // The request shares the handshake's time: a client that negotiates and then asks for nothing would
+            // hold its connection for as long as it liked
+            var requestHeader = await ReadRequestHeaderAsync(networkStream, handshakeCts.Token).ConfigureAwait(false);
+            if (requestHeader is null)
+            {
+                Logger.LogWarning("Unsupported address type from {ClientEndpoint}", clientEndpoint);
+                await SendReplyAsync(networkStream, Socks5CommandReply.AddressTypeNotSupported, IPAddress.Any, 0, handshakeCts.Token).ConfigureAwait(false);
+                return Socks5HandshakeResult.Invalid;
+            }
+
             return Socks5HandshakeResult.Valid(authType, requestHeader);
         }
         catch (OperationCanceledException)
@@ -247,7 +257,9 @@ public sealed class Socks5ProxyServer(
         return isValid;
     }
 
-    private static async Task<RequestHeader> ReadRequestHeaderAsync(NetworkStream stream, CancellationToken cancellationToken)
+    // Reads the whole request: its header, then the destination's address and port. The result is null for an
+    // address type the server does not know, as nothing tells how many of the bytes that follow belong to it.
+    private static async Task<RequestHeader?> ReadRequestHeaderAsync(NetworkStream stream, CancellationToken cancellationToken)
     {
         var requestHeaderBytes = new byte[4];
         await stream.ReadExactlyAsync(requestHeaderBytes, cancellationToken).ConfigureAwait(false);
@@ -257,34 +269,30 @@ public sealed class Socks5ProxyServer(
             throw new ProtocolViolationException($"Invalid SOCKS version in request: {requestHeaderBytes[0]}");
         }
 
+        var destination = await ReadDestinationAsync(stream, (Socks5AddressType)requestHeaderBytes[3], cancellationToken).ConfigureAwait(false);
+        if (destination is null)
+            return null;
+
         return new RequestHeader
         {
             Command = (Socks5Command)requestHeaderBytes[1],
-            AddressType = (Socks5AddressType)requestHeaderBytes[3]
+            Destination = destination.Value
         };
     }
 
-    private async Task HandleConnectCommandAsync(NetworkStream clientStream, IPAddress destinationAddress, int destinationPort, CancellationToken cancellationToken,
-        IPEndPoint clientEndpoint)
+    private async Task HandleConnectCommandAsync(NetworkStream clientStream, Socks5Endpoint destination,
+        IPEndPoint clientEndpoint, CancellationToken cancellationToken)
     {
         try
         {
-            Logger.LogDebug("Connecting to {DestAddress}:{DestPort} for {ClientEndpoint}", destinationAddress, destinationPort, clientEndpoint);
+            Logger.LogDebug("Connecting to {Destination} for {ClientEndpoint}", destination, clientEndpoint);
 
-            using var remoteClient = new TcpClient(destinationAddress.AddressFamily);
-            remoteClient.NoDelay = true;
-
-            // Set connection timeout
-            using (var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
-            {
-                connectionCts.CancelAfter(options.HostConnectionTimeout);
-                await remoteClient.ConnectAsync(destinationAddress, destinationPort, connectionCts.Token).ConfigureAwait(false);
-            }
+            using var remoteClient = await ConnectToDestinationAsync(destination, cancellationToken).ConfigureAwait(false);
 
             var localEndPoint = (IPEndPoint)remoteClient.Client.LocalEndPoint!;
             await SendReplyAsync(clientStream, Socks5CommandReply.Succeeded, localEndPoint.Address, localEndPoint.Port, cancellationToken).ConfigureAwait(false);
 
-            Logger.LogDebug("Tunneling established between {ClientEndpoint} and {DestAddress}:{DestPort}", clientEndpoint, destinationAddress, destinationPort);
+            Logger.LogDebug("Tunneling established between {ClientEndpoint} and {Destination}", clientEndpoint, destination);
 
             var remoteStream = remoteClient.GetStream();
             await ProxyStreamPump.PumpStreamsAsync(clientStream, remoteStream, options.TunnelHalfCloseTimeout,
@@ -298,7 +306,7 @@ public sealed class Socks5ProxyServer(
         {
             await SendReplyAsync(clientStream, Socks5CommandReply.ConnectionRefused, IPAddress.Any, 0, cancellationToken).ConfigureAwait(false);
         }
-        catch (SocketException exception) when (exception.SocketErrorCode == SocketError.HostUnreachable)
+        catch (SocketException exception) when (exception.SocketErrorCode == SocketError.HostUnreachable || IsNameLookupFailure(exception))
         {
             await SendReplyAsync(clientStream, Socks5CommandReply.HostUnreachable, IPAddress.Any, 0, cancellationToken).ConfigureAwait(false);
         }
@@ -308,17 +316,57 @@ public sealed class Socks5ProxyServer(
         }
         catch (Exception exception)
         {
-            Logger.LogError(exception, "Failed to establish connection to {DestAddress}:{DestPort} for {ClientEndpoint}", destinationAddress, destinationPort, clientEndpoint);
+            Logger.LogError(exception, "Failed to establish connection to {Destination} for {ClientEndpoint}", destination, clientEndpoint);
             await SendReplyAsync(clientStream, Socks5CommandReply.GeneralSocksServerFailure, IPAddress.Any, 0, cancellationToken).ConfigureAwait(false);
         }
     }
 
+    // The lookup of a domain name and the connect share one limit: both are the time the destination takes
+    private async Task<TcpClient> ConnectToDestinationAsync(Socks5Endpoint destination, CancellationToken cancellationToken)
+    {
+        using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        connectionCts.CancelAfter(options.HostConnectionTimeout);
+
+        var address = await ResolveAddressAsync(destination, connectionCts.Token).ConfigureAwait(false);
+        var remoteClient = new TcpClient(address.AddressFamily);
+        try
+        {
+            remoteClient.NoDelay = true;
+            await remoteClient.ConnectAsync(address, destination.Port, connectionCts.Token).ConfigureAwait(false);
+            return remoteClient;
+        }
+        catch
+        {
+            remoteClient.Dispose();
+            throw;
+        }
+    }
+
+    // A domain name gives its IPv4 address when it has one
+    private static async Task<IPAddress> ResolveAddressAsync(Socks5Endpoint endpoint, CancellationToken cancellationToken)
+    {
+        if (endpoint.Address is not null)
+            return endpoint.Address;
+
+        var host = endpoint.Host ?? throw new ArgumentException("The endpoint has neither an address nor a host name.", nameof(endpoint));
+        var addresses = await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
+        return addresses.FirstOrDefault(address => address.AddressFamily == AddressFamily.InterNetwork)
+               ?? addresses.FirstOrDefault()
+               ?? throw new SocketException((int)SocketError.HostNotFound);
+    }
+
+    private static bool IsNameLookupFailure(SocketException exception) =>
+        exception.SocketErrorCode is SocketError.HostNotFound or SocketError.TryAgain or SocketError.NoRecovery or SocketError.NoData;
+
     private async Task HandleUdpAssociateCommandAsync(NetworkStream stream, TcpClient controlTcpClient,
-        Socks5AddressType addressType, IPEndPoint clientEndpoint, CancellationToken cancellationToken)
+        Socks5Endpoint declaredEndpoint, IPEndPoint clientEndpoint, CancellationToken cancellationToken)
     {
         // The client's declared UDP endpoint; all zeros means "unknown" (e.g., client behind NAT)
-        var declaredUdpEndpoint = await ReadDestinationAsync(stream, addressType, cancellationToken).ConfigureAwait(false);
-        var expectedClientUdpEndpoint = GetExpectedClientUdpEndpoint(declaredUdpEndpoint, clientEndpoint);
+        var declaredAddress = await TryResolveDeclaredAddressAsync(stream, declaredEndpoint, clientEndpoint, cancellationToken).ConfigureAwait(false);
+        if (declaredAddress is null)
+            return; // the refusal is sent
+
+        var expectedClientUdpEndpoint = GetExpectedClientUdpEndpoint(new IPEndPoint(declaredAddress, declaredEndpoint.Port), clientEndpoint);
 
         // Create UDP socket for communicating with the SOCKS5 client; use the control
         // connection's address family
@@ -338,11 +386,14 @@ public sealed class Socks5ProxyServer(
         Logger.LogDebug("UDP associate established for {ClientEndpoint} on port {Port}", clientEndpoint, localEndPoint.Port);
 
         // RFC 1928: the association lives as long as the TCP control connection. This is the
-        // only reader of the control stream; a read completes on close or cancellation.
+        // only reader of the control stream: it discards whatever the client sends there, as
+        // only the connection's close, or a cancellation, ends the association.
         try
         {
-            var buffer = new byte[1];
-            _ = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            var buffer = new byte[256];
+            while (await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false) > 0)
+            {
+            }
         }
         catch (Exception ex)
         {
@@ -354,6 +405,32 @@ public sealed class Socks5ProxyServer(
             proxyUdpClient.Dispose();
             try { await relayTask.ConfigureAwait(false); }
             catch { /* relay errors are already logged */ }
+        }
+    }
+
+    // A client may name its UDP endpoint by domain. A name that cannot be looked up in time refuses the
+    // request: the reply is sent here, and the result is null.
+    private async Task<IPAddress?> TryResolveDeclaredAddressAsync(NetworkStream stream, Socks5Endpoint declaredEndpoint,
+        IPEndPoint clientEndpoint, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var lookupCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            lookupCts.CancelAfter(options.HostConnectionTimeout);
+            return await ResolveAddressAsync(declaredEndpoint, lookupCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // the server stops, or the lookup ran out of time
+            cancellationToken.ThrowIfCancellationRequested();
+            await SendReplyAsync(stream, Socks5CommandReply.TtlExpired, IPAddress.Any, 0, cancellationToken).ConfigureAwait(false);
+            return null;
+        }
+        catch (SocketException exception)
+        {
+            Logger.LogWarning(exception, "Could not look up the UDP endpoint {DeclaredEndpoint} of {ClientEndpoint}", declaredEndpoint, clientEndpoint);
+            await SendReplyAsync(stream, Socks5CommandReply.HostUnreachable, IPAddress.Any, 0, cancellationToken).ConfigureAwait(false);
+            return null;
         }
     }
 
@@ -561,7 +638,9 @@ public sealed class Socks5ProxyServer(
         }
     }
 
-    private static async Task<IPEndPoint> ReadDestinationAsync(NetworkStream stream, Socks5AddressType addressType, CancellationToken cancellationToken)
+    // Reads a request's address and port as the client gave them, or null for an unknown address type. A
+    // domain name is not looked up here: this read is on the client's time, the lookup on the destination's.
+    private static async Task<Socks5Endpoint?> ReadDestinationAsync(NetworkStream stream, Socks5AddressType addressType, CancellationToken cancellationToken)
     {
         switch (addressType)
         {
@@ -569,13 +648,13 @@ public sealed class Socks5ProxyServer(
                 {
                     var buffer = new byte[6];
                     await stream.ReadExactlyAsync(buffer, cancellationToken).ConfigureAwait(false);
-                    return new IPEndPoint(new IPAddress(buffer.AsSpan(0, 4)), buffer[4] << 8 | buffer[5]);
+                    return new Socks5Endpoint(null, new IPAddress(buffer.AsSpan(0, 4)), buffer[4] << 8 | buffer[5]);
                 }
             case Socks5AddressType.IpV6:
                 {
                     var buffer = new byte[18];
                     await stream.ReadExactlyAsync(buffer, cancellationToken).ConfigureAwait(false);
-                    return new IPEndPoint(new IPAddress(buffer.AsSpan(0, 16)), buffer[16] << 8 | buffer[17]);
+                    return new Socks5Endpoint(null, new IPAddress(buffer.AsSpan(0, 16)), buffer[16] << 8 | buffer[17]);
                 }
             case Socks5AddressType.DomainName:
                 {
@@ -592,9 +671,7 @@ public sealed class Socks5ProxyServer(
                         var span = mem.Span;
                         var port = span[length] << 8 | span[length + 1];
                         var hostname = Encoding.UTF8.GetString(span[..length]);
-                        var ipAddresses = await Dns.GetHostAddressesAsync(hostname, cancellationToken).ConfigureAwait(false);
-                        var ipAddress = ipAddresses.FirstOrDefault(address => address.AddressFamily == AddressFamily.InterNetwork) ?? ipAddresses[0];
-                        return new IPEndPoint(ipAddress, port);
+                        return new Socks5Endpoint(hostname, null, port);
                     }
                     finally
                     {
@@ -603,7 +680,7 @@ public sealed class Socks5ProxyServer(
                     }
                 }
             default:
-                throw new NotSupportedException($"Unsupported address type: {addressType}");
+                return null;
         }
     }
 

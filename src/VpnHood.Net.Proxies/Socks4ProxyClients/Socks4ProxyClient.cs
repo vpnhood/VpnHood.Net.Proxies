@@ -76,7 +76,7 @@ public class Socks4ProxyClient(Socks4ProxyClientOptions options) : IProxyClient
     /// <returns>A task that represents the asynchronous operation. It completes when the tunnel is open.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> or <paramref name="host"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException"><paramref name="host"/> is empty or white space.</exception>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="port"/> is zero or negative.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="port"/> is less than 1 or greater than 65535.</exception>
     /// <exception cref="ProxyClientException">
     /// <paramref name="host"/> is an IPv6 literal, which SOCKS4 cannot carry; the proxy's answer is not SOCKS4;
     /// or the proxy refused the request. <see cref="SocketException.SocketErrorCode"/> tells which.
@@ -89,6 +89,7 @@ public class Socks4ProxyClient(Socks4ProxyClientOptions options) : IProxyClient
         ArgumentNullException.ThrowIfNull(tcpClient);
         ArgumentException.ThrowIfNullOrWhiteSpace(host);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(port);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(port, IPEndPoint.MaxPort); // the request has two bytes for it
 
         try {
             if (!tcpClient.Connected) {
@@ -129,10 +130,13 @@ public class Socks4ProxyClient(Socks4ProxyClientOptions options) : IProxyClient
     /// <param name="tcpClient">A connection that is not connected yet. When the check fails, it is closed.</param>
     /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
     /// <returns>A task that represents the asynchronous operation. It completes when the connection is open.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> is <see langword="null"/>.</exception>
     /// <exception cref="SocketException">The connection to the proxy failed.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was canceled.</exception>
     public async Task CheckConnectionAsync(TcpClient tcpClient, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(tcpClient);
+
         try {
             tcpClient.NoDelay = true;
             await tcpClient.ConnectAsync(options.ProxyEndPoint, cancellationToken).ConfigureAwait(false);

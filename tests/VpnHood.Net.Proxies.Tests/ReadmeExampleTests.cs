@@ -1,7 +1,5 @@
 using System.Net;
 using System.Net.Sockets;
-using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
 using VpnHood.Net.Proxies.HttpProxyClients;
 using VpnHood.Net.Proxies.HttpProxyServers;
 using VpnHood.Net.Proxies.Socks4ProxyClients;
@@ -71,7 +69,7 @@ public class ReadmeExampleTests
         using var udp = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
         var localUdpEndPoint = (IPEndPoint)udp.Client.LocalEndPoint!;
 
-        // the association lasts while this TCP control connection stays open, with nothing more sent on it
+        // the association lasts while this TCP control connection stays open
         using var controlTcp = new TcpClient();
         var relayEndPoint = await client.CreateUdpAssociateAsync(controlTcp, localUdpEndPoint, CancellationToken.None);
 
@@ -131,7 +129,7 @@ public class ReadmeExampleTests
     public async Task Https_server()
     {
         using var echo = new EchoServer(IPAddress.Loopback);
-        using var certificate = CreateSelfSignedCertificate();
+        using var certificate = TestCertificates.CreateSelfSigned();
 
         #region Snippet:HttpsServer
         using var server = new HttpsProxyServer(new HttpProxyServerOptions {
@@ -216,18 +214,5 @@ public class ReadmeExampleTests
         public IPEndPoint EndPoint => (IPEndPoint)Listener.LocalEndpoint;
         public TcpListenerScope() => Listener.Start();
         public void Dispose() => Listener.Stop();
-    }
-
-    private static X509Certificate2 CreateSelfSignedCertificate()
-    {
-        using var rsa = RSA.Create(2048);
-        var request = new CertificateRequest("CN=127.0.0.1", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        var sanBuilder = new SubjectAlternativeNameBuilder();
-        sanBuilder.AddIpAddress(IPAddress.Loopback);
-        request.CertificateExtensions.Add(sanBuilder.Build());
-        using var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
-
-        // re-import so the ephemeral private key is usable by SslStream on Windows
-        return X509CertificateLoader.LoadPkcs12(cert.Export(X509ContentType.Pfx), password: null);
     }
 }

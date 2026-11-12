@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
 using VpnHood.Net.Proxies.HttpProxyClients;
 using VpnHood.Net.Proxies.HttpProxyServers;
 using VpnHood.Net.Proxies.Tests.TestHelpers;
@@ -210,5 +212,122 @@ public class HttpProxyClientTests
             listener.Stop();
             try { await stubProxyTask; } catch { /* listener stopped */ }
         }
+    }
+
+    [TestMethod]
+    public async Task HttpProxy_Connect_PortAbove65535_Throws()
+    {
+        using var server = await StartHttpProxyAsync();
+        var client = new HttpProxyClient(new HttpProxyClientOptions { ProxyEndPoint = server.ListenerEndPoint });
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var tcp = new TcpClient();
+
+        await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(() =>
+            client.ConnectAsync(tcp, "example.com", 65536, cts.Token));
+        Assert.IsFalse(tcp.Connected, "the port is refused before anything is sent");
+    }
+
+    [TestMethod]
+    public async Task HttpProxy_Connect_NullDestination_Throws()
+    {
+        var client = new HttpProxyClient(new HttpProxyClientOptions { ProxyEndPoint = new IPEndPoint(IPAddress.Loopback, 8080) });
+        using var tcp = new TcpClient();
+
+        await Assert.ThrowsExactlyAsync<ArgumentNullException>(() =>
+            client.ConnectAsync(tcp, (IPEndPoint)null!, CancellationToken.None));
+        await Assert.ThrowsExactlyAsync<ArgumentNullException>(() =>
+            client.ConnectAsync(null!, new IPEndPoint(IPAddress.Loopback, 80), CancellationToken.None));
+    }
+
+    private static HttpsProxyServer StartHttpsProxy(X509Certificate2 certificate, string? user = null, string? pass = null)
+    {
+        var server = new HttpsProxyServer(new HttpProxyServerOptions {
+            ListenEndPoint = new IPEndPoint(IPAddress.Loopback, 0),
+            ServerCertificate = certificate,
+            Username = user,
+            Password = pass
+        });
+        server.Start();
+        return server;
+    }
+
+    // The paths below release the client's TLS stream themselves. Nothing outside the client can see that
+    // release; these tests hold what a caller does see: the exception, and what becomes of the connection.
+
+    [TestMethod]
+    public async Task HttpsProxy_Connect_RefusedAfterTlsHandshake_ThrowsAndClosesConnection()
+    {
+        using var echo = new EchoServer(IPAddress.Loopback);
+        using var certificate = TestCertificates.CreateSelfSigned();
+        using var server = StartHttpsProxy(certificate, user: "u", pass: "p");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        // TLS succeeds, then the proxy refuses the request: no credentials
+        var client = new HttpProxyClient(new HttpProxyClientOptions {
+            ProxyEndPoint = server.ListenerEndPoint,
+            UseTls = true,
+            AllowInvalidCertificates = true
+        });
+        using var tcp = new TcpClient();
+
+        var ex = await Assert.ThrowsExactlyAsync<ProxyClientException>(() =>
+            client.ConnectAsync(tcp, echo.EndPoint, cts.Token));
+        Assert.AreEqual(SocketError.AccessDenied, ex.SocketErrorCode);
+        Assert.IsFalse(tcp.Connected, "a failed exchange closes the connection");
+    }
+
+    [TestMethod]
+    public async Task HttpsProxy_Connect_UntrustedCertificate_ThrowsAndClosesConnection()
+    {
+        using var echo = new EchoServer(IPAddress.Loopback);
+        using var certificate = TestCertificates.CreateSelfSigned();
+        using var server = StartHttpsProxy(certificate);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        // the self-signed certificate fails validation, so the TLS handshake itself fails
+        var client = new HttpProxyClient(new HttpProxyClientOptions {
+            ProxyEndPoint = server.ListenerEndPoint,
+            UseTls = true
+        });
+        using var tcp = new TcpClient();
+
+        await Assert.ThrowsExactlyAsync<AuthenticationException>(() =>
+            client.ConnectAsync(tcp, echo.EndPoint, cts.Token));
+        Assert.IsFalse(tcp.Connected, "a failed exchange closes the connection");
+    }
+
+    [TestMethod]
+    public async Task HttpsProxy_CheckConnection_CompletesTlsHandshake_LeavesConnectionOpen()
+    {
+        using var certificate = TestCertificates.CreateSelfSigned();
+        using var server = StartHttpsProxy(certificate);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        var client = new HttpProxyClient(new HttpProxyClientOptions {
+            ProxyEndPoint = server.ListenerEndPoint,
+            UseTls = true,
+            AllowInvalidCertificates = true
+        });
+        using var tcp = new TcpClient();
+
+        await client.CheckConnectionAsync(tcp, cts.Token);
+        Assert.IsTrue(tcp.Connected, "the check leaves closing the connection to its caller");
+    }
+
+    [TestMethod]
+    public async Task HttpsProxy_CheckConnection_UntrustedCertificate_ThrowsAndClosesConnection()
+    {
+        using var certificate = TestCertificates.CreateSelfSigned();
+        using var server = StartHttpsProxy(certificate);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        var client = new HttpProxyClient(new HttpProxyClientOptions {
+            ProxyEndPoint = server.ListenerEndPoint,
+            UseTls = true
+        });
+        using var tcp = new TcpClient();
+
+        await Assert.ThrowsExactlyAsync<AuthenticationException>(() => client.CheckConnectionAsync(tcp, cts.Token));
+        Assert.IsFalse(tcp.Connected, "a failed check closes the connection");
     }
 }

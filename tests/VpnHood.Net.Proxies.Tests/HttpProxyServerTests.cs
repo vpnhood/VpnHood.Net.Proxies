@@ -1,7 +1,5 @@
 using System.Net;
 using System.Net.Sockets;
-using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using VpnHood.Net.Proxies.HttpProxyClients;
 using VpnHood.Net.Proxies.HttpProxyServers;
@@ -165,7 +163,7 @@ public class HttpProxyServerTests
     public async Task HttpsProxy_Connect_ThroughTls_Succeeds()
     {
         using var echo = new EchoServer(IPAddress.Loopback);
-        using var cert = CreateSelfSignedCertificate();
+        using var cert = TestCertificates.CreateSelfSigned();
         using var server = new HttpsProxyServer(new HttpProxyServerOptions {
             ListenEndPoint = new IPEndPoint(IPAddress.Loopback, 0),
             ServerCertificate = cert
@@ -378,16 +376,176 @@ public class HttpProxyServerTests
         Assert.AreEqual(0, read, "connection over the limit should be closed immediately");
     }
 
-    private static X509Certificate2 CreateSelfSignedCertificate()
+    [TestMethod]
+    public async Task HttpProxy_Get_RepeatedHeader_EveryLineForwardedInOrder()
     {
-        using var rsa = RSA.Create(2048);
-        var request = new CertificateRequest("CN=127.0.0.1", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        var sanBuilder = new SubjectAlternativeNameBuilder();
-        sanBuilder.AddIpAddress(IPAddress.Loopback);
-        request.CertificateExtensions.Add(sanBuilder.Build());
-        using var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
+        using var origin = new HttpOriginServer(IPAddress.Loopback);
+        using var server = StartHttpProxy();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
-        // re-import so the ephemeral private key is usable by SslStream on Windows
-        return X509CertificateLoader.LoadPkcs12(cert.Export(X509ContentType.Pfx), password: null);
+        using var tcp = new TcpClient();
+        await tcp.ConnectAsync(server.ListenerEndPoint, cts.Token);
+        var stream = tcp.GetStream();
+
+        // a name may come on several lines; each line and their order are the request's
+        var request = $"GET http://{origin.EndPoint}/x HTTP/1.1\r\n" +
+                      $"Host: {origin.EndPoint}\r\n" +
+                      "X-Tag: one\r\n" +
+                      "Accept: text/html\r\n" +
+                      "X-Tag: two\r\n" +
+                      "Accept: application/json\r\n" +
+                      "X-Tag: three\r\n" +
+                      "\r\n";
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(request), cts.Token);
+
+        var responseHeaders = await ReadResponseHeadersAsync(stream, cts.Token);
+        StringAssert.StartsWith(responseHeaders, "HTTP/1.1 200");
+
+        await origin.RequestReceived.WaitAsync(cts.Token);
+        var forwarded = origin.ReceivedHeaders.Split("\r\n")
+            .Where(line => line.StartsWith("X-Tag:") || line.StartsWith("Accept:"))
+            .ToArray();
+        CollectionAssert.AreEqual(
+            new[] { "X-Tag: one", "Accept: text/html", "X-Tag: two", "Accept: application/json", "X-Tag: three" },
+            forwarded);
+    }
+
+    [TestMethod]
+    public async Task HttpProxy_Get_SeveralConnectionLines_EachLinesHeadersNotForwarded()
+    {
+        using var origin = new HttpOriginServer(IPAddress.Loopback);
+        using var server = StartHttpProxy();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        using var tcp = new TcpClient();
+        await tcp.ConnectAsync(server.ListenerEndPoint, cts.Token);
+        var stream = tcp.GetStream();
+
+        // the second Connection line must not make the proxy forget what the first one named
+        var request = $"GET http://{origin.EndPoint}/x HTTP/1.1\r\n" +
+                      $"Host: {origin.EndPoint}\r\n" +
+                      "Connection: X-First\r\n" +
+                      "Connection: keep-alive, X-Second\r\n" +
+                      "X-First: do-not-forward\r\n" +
+                      "X-Second: do-not-forward\r\n" +
+                      "X-Keep: forward-me\r\n" +
+                      "\r\n";
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(request), cts.Token);
+
+        var responseHeaders = await ReadResponseHeadersAsync(stream, cts.Token);
+        StringAssert.StartsWith(responseHeaders, "HTTP/1.1 200");
+
+        await origin.RequestReceived.WaitAsync(cts.Token);
+        StringAssert.Contains(origin.ReceivedHeaders, "X-Keep: forward-me");
+        Assert.IsFalse(origin.ReceivedHeaders.Contains("X-First", StringComparison.OrdinalIgnoreCase),
+            "a header named by the first Connection line must not be forwarded");
+        Assert.IsFalse(origin.ReceivedHeaders.Contains("X-Second", StringComparison.OrdinalIgnoreCase),
+            "a header named by the second Connection line must not be forwarded");
+    }
+
+    [TestMethod]
+    public async Task HttpProxy_Get_HeaderBytesAbove127_ArriveUnchanged()
+    {
+        using var origin = new HttpOriginServer(IPAddress.Loopback);
+        using var server = StartHttpProxy();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        using var tcp = new TcpClient();
+        await tcp.ConnectAsync(server.ListenerEndPoint, cts.Token);
+        var stream = tcp.GetStream();
+
+        // "café" in Latin-1 and in UTF-8: neither may be re-encoded on its way through the proxy
+        byte[] latin1Line = [.. "X-Latin1: caf"u8, 0xE9, (byte)'\r', (byte)'\n'];
+        byte[] utf8Line = [.. "X-Utf8: caf"u8, 0xC3, 0xA9, (byte)'\r', (byte)'\n'];
+        byte[] request = [
+            .. Encoding.ASCII.GetBytes($"GET http://{origin.EndPoint}/x HTTP/1.1\r\nHost: {origin.EndPoint}\r\n"),
+            .. latin1Line,
+            .. utf8Line,
+            .. "\r\n"u8
+        ];
+        await stream.WriteAsync(request, cts.Token);
+
+        var responseHeaders = await ReadResponseHeadersAsync(stream, cts.Token);
+        StringAssert.StartsWith(responseHeaders, "HTTP/1.1 200");
+
+        await origin.RequestReceived.WaitAsync(cts.Token);
+        Assert.IsTrue(origin.ReceivedHeaderBytes.AsSpan().IndexOf(latin1Line) >= 0, "the Latin-1 header line should arrive byte for byte");
+        Assert.IsTrue(origin.ReceivedHeaderBytes.AsSpan().IndexOf(utf8Line) >= 0, "the UTF-8 header line should arrive byte for byte");
+    }
+
+    [TestMethod]
+    public async Task HttpProxy_Post_HeadersUnderTheLimit_BodyBehindThem_IsAccepted()
+    {
+        using var origin = new HttpOriginServer(IPAddress.Loopback);
+        using var server = StartHttpProxy();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        using var tcp = new TcpClient();
+        await tcp.ConnectAsync(server.ListenerEndPoint, cts.Token);
+        var stream = tcp.GetStream();
+
+        // 32,600 bytes of request line and headers, under the limit of 32,768, and the body right behind them
+        // in one write: the body's bytes are no part of the headers and must not count as theirs
+        const int headersLength = 32_600;
+        const string lastHeaderName = "X-Last: ";
+        const string headersEnd = "\r\n\r\n";
+        var body = new byte[9000];
+        Random.Shared.NextBytes(body);
+        var headers = new StringBuilder();
+        headers.Append($"POST http://{origin.EndPoint}/submit HTTP/1.1\r\n");
+        headers.Append($"Host: {origin.EndPoint}\r\n");
+        headers.Append($"Content-Length: {body.Length}\r\n");
+        for (var i = 0; i < 4; i++)
+            headers.Append($"X-Filler-{i}: {new string('a', 7800)}\r\n");
+        var lastHeaderValueLength = headersLength - headers.Length - lastHeaderName.Length - headersEnd.Length;
+        headers.Append(lastHeaderName).Append('b', lastHeaderValueLength).Append(headersEnd);
+        Assert.AreEqual(headersLength, headers.Length);
+
+        byte[] request = [.. Encoding.ASCII.GetBytes(headers.ToString()), .. body];
+        await stream.WriteAsync(request, cts.Token);
+
+        var responseHeaders = await ReadResponseHeadersAsync(stream, cts.Token);
+        StringAssert.StartsWith(responseHeaders, "HTTP/1.1 200");
+
+        await origin.RequestReceived.WaitAsync(cts.Token);
+        CollectionAssert.AreEqual(body, origin.ReceivedBody);
+    }
+
+    [TestMethod]
+    public async Task HttpProxy_Get_HttpsUri_Returns501_AndReachesNoOrigin()
+    {
+        using var origin = new HttpOriginServer(IPAddress.Loopback);
+        using var server = StartHttpProxy();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        using var tcp = new TcpClient();
+        await tcp.ConnectAsync(server.ListenerEndPoint, cts.Token);
+        var stream = tcp.GetStream();
+
+        // the proxy speaks no TLS to origins: sent on, this request would cross the network in the clear
+        var request = $"GET https://{origin.EndPoint}/secret HTTP/1.1\r\nHost: {origin.EndPoint}\r\n\r\n";
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(request), cts.Token);
+
+        var responseHeaders = await ReadResponseHeadersAsync(stream, cts.Token);
+        StringAssert.StartsWith(responseHeaders, "HTTP/1.1 501");
+        Assert.AreEqual(0, origin.ConnectionCount, "an https: request must not reach its origin");
+    }
+
+    [TestMethod]
+    public async Task HttpProxy_Get_PathInsteadOfAbsoluteUri_Returns400()
+    {
+        using var server = StartHttpProxy();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        using var tcp = new TcpClient();
+        await tcp.ConnectAsync(server.ListenerEndPoint, cts.Token);
+        var stream = tcp.GetStream();
+
+        // a request meant for an origin server, not for a proxy
+        var request = "GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(request), cts.Token);
+
+        var responseHeaders = await ReadResponseHeadersAsync(stream, cts.Token);
+        StringAssert.StartsWith(responseHeaders, "HTTP/1.1 400");
     }
 }

@@ -452,6 +452,158 @@ public class Socks5ProxyClientTests
     }
 
     [TestMethod]
+    public async Task Socks5_Connect_HostNameWithPortAbove65535_Throws()
+    {
+        // the request has two bytes for the port: a larger one must be refused, not cut down to them
+        using var server = await StartSocks5ProxyAsync();
+        var client = new Socks5ProxyClient(new Socks5ProxyClientOptions { ProxyEndPoint = server.ListenerEndPoint });
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        using var tcp = new TcpClient();
+        await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(() =>
+            client.ConnectAsync(tcp, "localhost", 65536, cts.Token));
+        Assert.IsFalse(tcp.Connected, "the port is refused before anything is sent");
+    }
+
+    [TestMethod]
+    public async Task Socks5_OperationsAtOnce_OnOneConnection_RunOneAtATime()
+    {
+        using var echo = new EchoServer(IPAddress.Loopback);
+        using var server = await StartSocks5ProxyAsync(user: "user", pass: "pass");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        var options = new Socks5ProxyClientOptions { ProxyEndPoint = server.ListenerEndPoint, Username = "user", Password = "pass" };
+        var client = new Socks5ProxyClient(options);
+
+        // connected ahead, so each operation below finds the connection open and not yet negotiated
+        using var tcp = new TcpClient();
+        await tcp.ConnectAsync(server.ListenerEndPoint, cts.Token);
+
+        // unserialized, each of them would start a negotiation of its own on the one stream
+        await Task.WhenAll(
+            client.CheckConnectionAsync(tcp, cts.Token),
+            client.CheckConnectionAsync(tcp, cts.Token),
+            client.CheckConnectionAsync(tcp, cts.Token),
+            client.ConnectAsync(tcp, echo.EndPoint, cts.Token));
+
+        var stream = tcp.GetStream();
+        var payload = "hello after the crowd"u8.ToArray();
+        await stream.WriteAsync(payload, cts.Token);
+        var buf = new byte[payload.Length];
+        await stream.ReadExactlyAsync(buf, cts.Token);
+        CollectionAssert.AreEqual(payload, buf);
+    }
+
+    [TestMethod]
+    public async Task Socks5_OperationCanceledWhileItWaits_LeavesConnectionOpen()
+    {
+        // a stand-in proxy that accepts and never answers, so the first operation stays in its negotiation
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            var client = new Socks5ProxyClient(new Socks5ProxyClientOptions { ProxyEndPoint = (IPEndPoint)listener.LocalEndpoint });
+            using var firstCts = new CancellationTokenSource();
+            using var tcp = new TcpClient();
+            var first = client.CheckConnectionAsync(tcp, firstCts.Token);
+            using var accepted = await listener.AcceptTcpClientAsync();
+
+            // the second one waits for the first; its cancellation is no failure of the connection
+            using var secondCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+            await Assert.ThrowsAsync<OperationCanceledException>(() => client.CheckConnectionAsync(tcp, secondCts.Token));
+            Assert.IsTrue(tcp.Connected, "the operation ahead still uses the connection");
+
+            await firstCts.CancelAsync();
+            await Assert.ThrowsAsync<OperationCanceledException>(() => first);
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [TestMethod]
+    public void Socks5_ParseUdpResponse_ReadsEachAddressType()
+    {
+        byte[] payload = [0xAA, 0xBB];
+
+        byte[] ipV4 = [0, 0, 0, 1, 10, 0, 0, 7, 0x1F, 0x90, .. payload];
+        var endpoint = Socks5ProxyClient.ParseUdpResponse(ipV4, out var data);
+        Assert.AreEqual(IPAddress.Parse("10.0.0.7"), endpoint.Address);
+        Assert.IsNull(endpoint.Host);
+        Assert.AreEqual(8080, endpoint.Port);
+        CollectionAssert.AreEqual(payload, data.ToArray());
+
+        byte[] ipV6 = [0, 0, 0, 4, .. IPAddress.IPv6Loopback.GetAddressBytes(), 0, 53, .. payload];
+        endpoint = Socks5ProxyClient.ParseUdpResponse(ipV6, out data);
+        Assert.AreEqual(IPAddress.IPv6Loopback, endpoint.Address);
+        Assert.AreEqual(53, endpoint.Port);
+        CollectionAssert.AreEqual(payload, data.ToArray());
+
+        byte[] domain = [0, 0, 0, 3, 4, (byte)'h', (byte)'o', (byte)'s', (byte)'t', 1, 187, .. payload];
+        endpoint = Socks5ProxyClient.ParseUdpResponse(domain, out data);
+        Assert.AreEqual("host", endpoint.Host);
+        Assert.IsNull(endpoint.Address);
+        Assert.AreEqual(443, endpoint.Port);
+        CollectionAssert.AreEqual(payload, data.ToArray());
+
+        // a header with nothing after it: an empty payload
+        byte[] noPayload = [0, 0, 0, 1, 10, 0, 0, 7, 0, 80];
+        Socks5ProxyClient.ParseUdpResponse(noPayload, out data);
+        Assert.AreEqual(0, data.Length);
+    }
+
+    [TestMethod]
+    public void Socks5_ParseUdpResponse_DatagramCutInsideItsHeader_ThrowsArgumentException()
+    {
+        // each one ends inside its address or its port; a relay's datagram is outside input, so the caller
+        // must get the one exception that says so, not whichever the slicing happens to throw
+        byte[][] datagrams = [
+            [0, 0, 0, 1, 10, 0, 0], // IPv4: three of four address bytes
+            [0, 0, 0, 1, 10, 0, 0, 7], // IPv4: no port
+            [0, 0, 0, 1, 10, 0, 0, 7, 0], // IPv4: half a port
+            [0, 0, 0, 4, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], // IPv6: twelve of sixteen address bytes
+            [0, 0, 0, 4, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 0], // IPv6: half a port
+            [0, 0, 0, 3, 9, (byte)'h', (byte)'o', (byte)'s', (byte)'t'], // domain: four of nine name bytes
+            [0, 0, 0, 3, 4, (byte)'h', (byte)'o', (byte)'s', (byte)'t', 1] // domain: half a port
+        ];
+
+        foreach (var datagram in datagrams)
+            Assert.ThrowsExactly<ArgumentException>(() => Socks5ProxyClient.ParseUdpResponse(datagram, out _),
+                $"A datagram of {datagram.Length} bytes with address type {datagram[3]}.");
+    }
+
+    [TestMethod]
+    public async Task Socks5_UdpAssociate_BytesOnControlConnection_DoNotEndAssociation()
+    {
+        using var udpEcho = new UdpEchoServer(IPAddress.Loopback);
+        using var server = await StartSocks5ProxyAsync();
+
+        var options = new Socks5ProxyClientOptions { ProxyEndPoint = server.ListenerEndPoint };
+        var client = new Socks5ProxyClient(options);
+
+        using var udpClient = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+        var clientUdpEndpoint = (IPEndPoint)udpClient.Client.LocalEndPoint!;
+
+        using var controlTcp = new TcpClient();
+        var proxyUdpEndpoint = await client.CreateUdpAssociateAsync(controlTcp, clientUdpEndpoint, CancellationToken.None);
+
+        // RFC 1928 ends an association with its TCP connection, not with what a client sends on it
+        await controlTcp.GetStream().WriteAsync(new byte[] { 1, 2, 3 });
+        await Task.Delay(300); // time for the server to read them
+
+        var message = "still associated"u8.ToArray();
+        var requestBuffer = new byte[1024];
+        var requestLength = Socks5ProxyClient.WriteUdpRequest(requestBuffer, udpEcho.EndPoint, message);
+        await udpClient.SendAsync(requestBuffer.AsMemory(0, requestLength).ToArray(), proxyUdpEndpoint);
+
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var response = await udpClient.ReceiveAsync(timeoutCts.Token);
+        Socks5ProxyClient.ParseUdpResponse(response.Buffer, out var responsePayload);
+        CollectionAssert.AreEqual(message, responsePayload.ToArray());
+    }
+
+    [TestMethod]
     public async Task Socks5_Udp_PacketFromUnknownSource_IsDropped()
     {
         // security: a third party that discovers the relay port must not be able to

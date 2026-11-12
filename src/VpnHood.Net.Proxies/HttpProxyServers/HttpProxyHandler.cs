@@ -46,7 +46,7 @@ internal static class HttpProxyHandler
             // Check authentication
             if (username != null)
             {
-                if (!ValidateBasicAuth(headers.GetValueOrDefault("Proxy-Authorization"), username, password ?? string.Empty))
+                if (!ValidateBasicAuth(FindLastHeaderValue(headers, "Proxy-Authorization"), username, password ?? string.Empty))
                 {
                     logger.LogWarning("Authentication failed for {ClientEndpoint}", clientEndpointAddress);
                     await WriteProxyAuthRequiredAsync(stream, cancellationToken).ConfigureAwait(false);
@@ -157,6 +157,18 @@ internal static class HttpProxyHandler
 
         host = authority[..lastColon];
         return host.Length > 0 && int.TryParse(authority[(lastColon + 1)..], out port) && port is >= 1 and <= 65535;
+    }
+
+    // When a request repeats the header, its last line counts
+    private static string? FindLastHeaderValue(IReadOnlyList<HttpHeader> headers, string name)
+    {
+        for (var i = headers.Count - 1; i >= 0; i--)
+        {
+            if (headers[i].Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                return headers[i].Value;
+        }
+
+        return null;
     }
 
     public static bool ValidateBasicAuth(string? proxyAuthHeader, string expectedUsername, string expectedPassword)
