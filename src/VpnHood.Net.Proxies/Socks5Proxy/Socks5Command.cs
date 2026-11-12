@@ -14,6 +14,9 @@ public enum Socks5Command : byte
     /// </summary>
     Bind = 0x02,
 
-    /// <summary>Relay UDP datagrams for the client, for as long as the request's TCP connection stays open.</summary>
+    /// <summary>
+    /// Relay UDP datagrams for the client, for as long as the request's TCP connection stays open. The server of this
+    /// library also ends the association when anything arrives on that connection.
+    /// </summary>
     UdpAssociate = 0x03
 }

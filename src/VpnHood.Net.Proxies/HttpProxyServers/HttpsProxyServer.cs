@@ -11,7 +11,9 @@ namespace VpnHood.Net.Proxies.HttpProxyServers;
 /// </summary>
 /// <remarks>
 /// It speaks TLS 1.2 and 1.3 with <see cref="HttpProxyServerOptions.ServerCertificate"/> and asks for no client
-/// certificate. It serves only CONNECT; any other method gets 405 Method Not Allowed.
+/// certificate. It serves only CONNECT: once the TLS handshake, the request's parsing and any configured authentication
+/// have passed, another method gets 405 Method Not Allowed. With authentication on, missing or wrong credentials get
+/// 407 Proxy Authentication Required; a request refused otherwise gets 400 Bad Request or a closed connection.
 /// </remarks>
 /// <example>
 /// <code snippet="Snippet:HttpsServer" language="csharp">
@@ -25,6 +27,7 @@ namespace VpnHood.Net.Proxies.HttpProxyServers;
 /// </example>
 /// <param name="options">The server's settings, with its certificate.</param>
 /// <param name="logger">The logger for the server's events, or <see langword="null"/> for none.</param>
+/// <exception cref="ArgumentNullException"><see cref="HttpProxyServerOptions.ListenEndPoint"/> is <see langword="null"/>.</exception>
 /// <exception cref="ArgumentException"><see cref="HttpProxyServerOptions.ServerCertificate"/> is <see langword="null"/>.</exception>
 /// <exception cref="ArgumentOutOfRangeException">
 /// <see cref="HttpProxyServerOptions.Backlog"/> or <see cref="HttpProxyServerOptions.MaxConnections"/> is zero or

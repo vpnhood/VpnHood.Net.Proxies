@@ -41,6 +41,7 @@ namespace VpnHood.Net.Proxies.Socks5ProxyServers;
 /// </example>
 /// <param name="options">The server's settings.</param>
 /// <param name="logger">The logger for the server's events, or <see langword="null"/> for none.</param>
+/// <exception cref="ArgumentNullException"><see cref="Socks5ProxyServerOptions.ListenEndPoint"/> is <see langword="null"/>.</exception>
 /// <exception cref="ArgumentOutOfRangeException">
 /// <see cref="Socks5ProxyServerOptions.Backlog"/> or <see cref="Socks5ProxyServerOptions.MaxConnections"/> is zero
 /// or negative.

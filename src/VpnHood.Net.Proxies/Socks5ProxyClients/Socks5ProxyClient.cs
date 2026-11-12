@@ -271,13 +271,14 @@ public class Socks5ProxyClient(
     /// <param name="clientUdpEndPoint">
     /// The address and port the client will send datagrams from, as the proxy sees them, or
     /// <see langword="null"/> when unknown, for example behind NAT. A proxy may relay only datagrams from it,
-    /// as the server of this library does.
+    /// as the server of this library does; that server takes a port of 0 as unknown, address included, and an
+    /// unspecified address with a port as the control connection's address.
     /// </param>
     /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
     /// <returns>
     /// A task that represents the asynchronous operation. Its result is the proxy's relay endpoint: send each
     /// datagram there, wrapped by <see cref="WriteUdpRequest"/>. When the proxy answers with an unspecified
-    /// address, the result has the address of <see cref="ProxyEndPoint"/>, as RFC 1928 asks.
+    /// address, the result has the address of <see cref="ProxyEndPoint"/>.
     /// </returns>
     /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">A credential in the options exceeds 255 bytes.</exception>

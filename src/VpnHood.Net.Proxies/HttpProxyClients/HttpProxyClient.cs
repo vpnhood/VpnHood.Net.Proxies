@@ -88,10 +88,16 @@ public class HttpProxyClient(
     /// for a connection this client opened no tunnel on, the connection's <see cref="NetworkStream"/>.
     /// </returns>
     /// <remarks>
-    /// Disposing the TLS stream leaves the TCP connection open: dispose the <see cref="TcpClient"/> to close the
-    /// tunnel.
+    /// Dispose both: the TLS stream, whose disposal leaves the TCP connection open, and the <see cref="TcpClient"/>,
+    /// which closes the tunnel.
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="tcpClient"/> is <see langword="null"/>.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// No tunnel of this client is on <paramref name="tcpClient"/>, and it is not connected.
+    /// </exception>
+    /// <exception cref="ObjectDisposedException">
+    /// No tunnel of this client is on <paramref name="tcpClient"/>, and it is disposed.
+    /// </exception>
     public Stream GetStream(TcpClient tcpClient)
     {
         ArgumentNullException.ThrowIfNull(tcpClient);
@@ -173,8 +179,8 @@ public class HttpProxyClient(
     /// without asking for a tunnel.
     /// </summary>
     /// <param name="tcpClient">
-    /// A connection that is not connected yet. Close it after the check: its TLS session is not kept, so it
-    /// cannot carry a tunnel. When the check fails, it is closed.
+    /// A connection that is not connected yet. With TLS, close it after the check: its TLS session is not kept, so it
+    /// cannot carry a tunnel; without TLS, a tunnel can follow on it. When the check fails, it is closed.
     /// </param>
     /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
     /// <returns>A task that represents the asynchronous operation. It completes when the check passes.</returns>

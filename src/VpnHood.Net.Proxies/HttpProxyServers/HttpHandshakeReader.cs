@@ -10,7 +10,7 @@ namespace VpnHood.Net.Proxies.HttpProxyServers;
 /// past the final CRLF (a request body start or pipelined tunnel data) is handed back via
 /// <see cref="DetachRemainder"/> so the tunnel phase can forward it.
 ///
-/// Hard limits: 8 KB per line, 100 headers, 32 KB total — a hostile client must not be able to
+/// Hard limits: 8 KB per line, 100 header names, 32 KB total — a hostile client must not be able to
 /// make one pending handshake allocate megabytes (many concurrent handshakes are cheap to open).
 /// </summary>
 internal sealed class HttpHandshakeReader(Stream stream) : IDisposable

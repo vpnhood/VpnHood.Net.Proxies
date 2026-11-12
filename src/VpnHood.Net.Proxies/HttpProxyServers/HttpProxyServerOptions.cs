@@ -34,6 +34,9 @@ public class HttpProxyServerOptions
     /// </summary>
     /// <remarks>
     /// An <see cref="HttpsProxyServer"/> gives the TLS handshake the same time again, before the request.
+    /// It counts whole milliseconds, a fraction dropped: −1 ms (<see cref="Timeout.InfiniteTimeSpan"/>) sets no limit;
+    /// zero cancels the handshake as soon as the cancel runs, so it fails unless it has passed already; −2 ms or less
+    /// fails every handshake at its start, and the server closes the connection.
     /// </remarks>
     public TimeSpan HandshakeTimeout { get; init; } = TimeSpan.FromSeconds(15);
 
@@ -43,7 +46,10 @@ public class HttpProxyServerOptions
     /// </summary>
     /// <remarks>
     /// When it elapses, a CONNECT request gets 502 Bad Gateway and a plain HTTP request 504 Gateway Timeout.
-    /// It is read for each connection, so a change applies to the next one.
+    /// It is read at each connect to a destination, so a change applies to the next connect, for a client accepted
+    /// already too. It counts whole milliseconds, a fraction dropped: −1 ms (<see cref="Timeout.InfiniteTimeSpan"/>) sets
+    /// no limit; zero cancels each connect as soon as the cancel runs, so it fails unless the destination has accepted
+    /// already; −2 ms or less fails every connect at its start.
     /// </remarks>
     public TimeSpan HostConnectionTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
@@ -51,6 +57,11 @@ public class HttpProxyServerOptions
     /// Gets how long, after one direction of a tunnel has ended (a TCP half-close) and the server has passed that
     /// end on, the other direction may still carry data before the tunnel is closed. The default is 15 seconds.
     /// </summary>
+    /// <remarks>
+    /// It counts whole milliseconds, a fraction dropped: −1 ms (<see cref="Timeout.InfiniteTimeSpan"/>) waits for the
+    /// other direction without a limit; zero, or −2 ms or less, closes the tunnel without that wait, once the ended
+    /// direction's end has been passed on.
+    /// </remarks>
     public TimeSpan TunnelHalfCloseTimeout { get; init; } = TimeSpan.FromSeconds(15);
 
     /// <summary>
@@ -77,7 +88,8 @@ public class HttpProxyServerOptions
     /// </summary>
     /// <remarks>
     /// An <see cref="HttpsProxyServer"/> requires it; an <see cref="HttpProxyServer"/> ignores it. The server does
-    /// not dispose it: keep it alive while the server runs, and dispose it afterwards.
+    /// not dispose it: keep it alive while the server runs, and until its connections' handlers have ended too, as
+    /// stopping does not wait for them and one may still be in its TLS handshake; dispose it afterwards.
     /// </remarks>
     public X509Certificate2? ServerCertificate { get; init; }
 }

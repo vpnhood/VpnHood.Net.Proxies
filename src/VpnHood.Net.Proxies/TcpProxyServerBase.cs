@@ -21,6 +21,7 @@ namespace VpnHood.Net.Proxies;
 /// The maximum number of connections served at once; a connection beyond it is accepted and closed at once.
 /// </param>
 /// <param name="logger">The logger for the server's events, or <see langword="null"/> for none.</param>
+/// <exception cref="ArgumentNullException"><paramref name="listenEndPoint"/> is <see langword="null"/>.</exception>
 /// <exception cref="ArgumentOutOfRangeException"><paramref name="backlog"/> or <paramref name="maxConnections"/> is zero or negative.</exception>
 public abstract class TcpProxyServerBase(
     IPEndPoint listenEndPoint,

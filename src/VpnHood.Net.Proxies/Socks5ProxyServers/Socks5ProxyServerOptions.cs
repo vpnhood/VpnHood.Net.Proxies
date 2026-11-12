@@ -36,6 +36,9 @@ public class Socks5ProxyServerOptions
     /// </summary>
     /// <remarks>
     /// The request that follows, and the server's lookup of a domain name in it, have no deadline of their own.
+    /// It counts whole milliseconds, a fraction dropped: −1 ms (<see cref="Timeout.InfiniteTimeSpan"/>) sets no limit;
+    /// zero cancels the handshake as soon as the cancel runs, so it fails unless it has passed already; −2 ms or less
+    /// fails every handshake at its start, and the server closes the connection.
     /// </remarks>
     public TimeSpan HandshakeTimeout { get; init; } = TimeSpan.FromSeconds(15);
 
@@ -44,8 +47,11 @@ public class Socks5ProxyServerOptions
     /// 30 seconds.
     /// </summary>
     /// <remarks>
-    /// When it elapses, the client gets <see cref="Socks5Proxy.Socks5CommandReply.TtlExpired"/>. It is read for
-    /// each connection, so a change applies to the next one.
+    /// When it elapses, the client gets <see cref="Socks5Proxy.Socks5CommandReply.TtlExpired"/>. It is read at each
+    /// connect to a destination, so a change applies to the next connect, for a client accepted already too.
+    /// It counts whole milliseconds, a fraction dropped: −1 ms (<see cref="Timeout.InfiniteTimeSpan"/>) sets no limit;
+    /// zero cancels each connect as soon as the cancel runs, so it fails unless the destination has accepted already;
+    /// −2 ms or less fails every connect at its start.
     /// </remarks>
     public TimeSpan HostConnectionTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
@@ -53,6 +59,11 @@ public class Socks5ProxyServerOptions
     /// Gets how long, after one direction of a tunnel has ended (a TCP half-close) and the server has passed that
     /// end on, the other direction may still carry data before the tunnel is closed. The default is 15 seconds.
     /// </summary>
+    /// <remarks>
+    /// It counts whole milliseconds, a fraction dropped: −1 ms (<see cref="Timeout.InfiniteTimeSpan"/>) waits for the
+    /// other direction without a limit; zero, or −2 ms or less, closes the tunnel without that wait, once the ended
+    /// direction's end has been passed on.
+    /// </remarks>
     public TimeSpan TunnelHalfCloseTimeout { get; init; } = TimeSpan.FromSeconds(15);
 
     /// <summary>

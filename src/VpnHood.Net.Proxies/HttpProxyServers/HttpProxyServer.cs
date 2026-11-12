@@ -30,6 +30,7 @@ namespace VpnHood.Net.Proxies.HttpProxyServers;
 /// </example>
 /// <param name="options">The server's settings. <see cref="HttpProxyServerOptions.ServerCertificate"/> is ignored.</param>
 /// <param name="logger">The logger for the server's events, or <see langword="null"/> for none.</param>
+/// <exception cref="ArgumentNullException"><see cref="HttpProxyServerOptions.ListenEndPoint"/> is <see langword="null"/>.</exception>
 /// <exception cref="ArgumentOutOfRangeException">
 /// <see cref="HttpProxyServerOptions.Backlog"/> or <see cref="HttpProxyServerOptions.MaxConnections"/> is zero or
 /// negative.

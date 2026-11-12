@@ -24,8 +24,8 @@ public enum Socks5CommandReply : byte
     ConnectionRefused = 0x05,
 
     /// <summary>
-    /// The connection attempt ran out of time. The server of this library sends it when the destination does
-    /// not accept the connection within its host connection timeout.
+    /// The TTL expired. The server of this library also sends it when the destination does not accept the
+    /// connection within its host connection timeout.
     /// </summary>
     TtlExpired = 0x06,
 
