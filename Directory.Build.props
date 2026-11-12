@@ -2,7 +2,7 @@
 	<!-- The single <Version> every project inherits. Stamped from pub/PubVersion.json by the shared
 	     publishing module (vpnhood/VpnHood: pub/Lib/PublishModuleNugets.ps1) — do not edit by hand. -->
 	<PropertyGroup>
-		<Version>9.0.857</Version>
+		<Version>9.1.873</Version>
 	</PropertyGroup>
 
 	<PropertyGroup>
